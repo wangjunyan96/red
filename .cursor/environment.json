@@ -1,0 +1,11 @@
+{
+  "name": "Cloud phone task server (Java)",
+  "install": "mkdir -p out && javac -d out server/src/com/aimovies/cloud/CloudPhoneTaskServer.java",
+  "terminals": [
+    {
+      "name": "task-server",
+      "command": "java -cp out com.aimovies.cloud.CloudPhoneTaskServer"
+    }
+  ],
+  "ports": [8080]
+}
