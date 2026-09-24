@@ -1,5 +1,12 @@
 # Cloud phone task server (Java)
 
+> **New: points-based order platform (Spring Boot).** A higher-level ordering
+> platform (users, points wallet, project catalog, orders, admin) now lives in
+> [`platform/`](platform/README.md). It reimplements the worker task APIs below
+> (`/api/v1/tasks/*`) so the existing Auto.js clients keep working, and it is the
+> app started by `.cursor/environment.json`. The standalone server documented
+> here remains as the original minimal reference implementation.
+
 This repository now includes a Java server for cloud-phone automation workflows.
 
 Current focus:

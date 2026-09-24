@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>后台 · 积分管理</title>
+  <style>
+    :root { --bg:#f5f6fa; --card:#fff; --primary:#5b7cfa; --border:#e6e8ef; --text:#1f2430; --muted:#8a90a2; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:var(--bg); color:var(--text); }
+    .wrap { max-width: 680px; margin: 0 auto; padding: 20px 16px 60px; }
+    h1 { font-size: 20px; margin: 12px 4px 18px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:16px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+    label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+    input { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font-size:14px; }
+    button { background:var(--primary); color:#fff; border:none; border-radius:10px; padding:10px 16px;
+      font-size:14px; cursor:pointer; }
+    button.secondary { background:#eef1fb; color:var(--primary); }
+    .row { display:flex; gap:8px; align-items:flex-end; }
+    .row > div { flex:1; }
+    table { width:100%; border-collapse: collapse; font-size:14px; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:500; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; background:#eef1fb; color:var(--primary); }
+    .msg { font-size:13px; margin:8px 4px; min-height:18px; }
+    .ok { color:#1a9d5a; } .err { color:#e5484d; }
+    .hidden { display:none; }
+    .points { font-weight:600; color:var(--primary); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>后台 · 积分管理</h1>
+
+  <div class="card" id="loginCard">
+    <div class="row">
+      <div>
+        <label>管理员账号</label>
+        <input id="u" value="admin" />
+      </div>
+      <div>
+        <label>密码</label>
+        <input id="p" type="password" value="admin123" />
+      </div>
+      <div style="flex:0 0 auto">
+        <button onclick="login()">登录</button>
+      </div>
+    </div>
+    <div class="msg" id="loginMsg"></div>
+  </div>
+
+  <div class="card hidden" id="panel">
+    <div class="row" style="margin-bottom:8px">
+      <div><span class="pill" id="who"></span></div>
+      <div style="flex:0 0 auto"><button class="secondary" onclick="loadUsers()">刷新用户</button></div>
+      <div style="flex:0 0 auto"><button class="secondary" onclick="logout()">退出</button></div>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>积分</th><th>编辑积分</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="msg" id="opMsg"></div>
+  </div>
+</div>
+
+<script>
+let token = null;
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+  return body;
+}
+
+async function login() {
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = ''; msg.className = 'msg';
+  try {
+    const r = await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: u.value, password: p.value })
+    });
+    if (r.user.role !== 'ADMIN') throw new Error('该账号不是管理员');
+    token = r.token;
+    document.getElementById('who').textContent = '已登录: ' + r.user.username + ' (ADMIN)';
+    document.getElementById('loginCard').classList.add('hidden');
+    document.getElementById('panel').classList.remove('hidden');
+    loadUsers();
+  } catch (e) {
+    msg.textContent = e.message; msg.className = 'msg err';
+  }
+}
+
+function logout() {
+  token = null;
+  document.getElementById('panel').classList.add('hidden');
+  document.getElementById('loginCard').classList.remove('hidden');
+}
+
+async function loadUsers() {
+  const rows = document.getElementById('rows');
+  rows.innerHTML = '';
+  const users = await api('/api/v1/admin/users');
+  for (const usr of users) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + usr.id + '</td>' +
+      '<td>' + usr.username + '</td>' +
+      '<td>' + usr.role + '</td>' +
+      '<td class="points" id="pts-' + usr.id + '">' + usr.points + '</td>' +
+      '<td><input style="width:90px" type="number" id="in-' + usr.id + '" placeholder="新积分" />' +
+      ' <button onclick="setPoints(' + usr.id + ')">设为</button></td>';
+    rows.appendChild(tr);
+  }
+}
+
+async function setPoints(id) {
+  const msg = document.getElementById('opMsg');
+  msg.textContent = ''; msg.className = 'msg';
+  const val = document.getElementById('in-' + id).value;
+  if (val === '') { msg.textContent = '请输入积分值'; msg.className = 'msg err'; return; }
+  try {
+    const r = await api('/api/v1/admin/users/' + id + '/points', {
+      method: 'POST',
+      body: JSON.stringify({ set: Number(val), remark: 'admin page' })
+    });
+    document.getElementById('pts-' + id).textContent = r.points;
+    document.getElementById('in-' + id).value = '';
+    msg.textContent = '用户 ' + id + ' 积分已更新为 ' + r.points; msg.className = 'msg ok';
+  } catch (e) {
+    msg.textContent = e.message; msg.className = 'msg err';
+  }
+}
+</script>
+</body>
+</html>

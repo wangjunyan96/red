@@ -1,10 +1,10 @@
 {
-  "name": "Cloud phone task server (Java)",
-  "install": "mkdir -p out lib && (test -f lib/h2.jar || curl -fsSL -o lib/h2.jar https://repo1.maven.org/maven2/com/h2database/h2/2.2.224/h2-2.2.224.jar) && javac -cp lib/h2.jar -d out server/src/com/aimovies/cloud/CloudPhoneTaskServer.java",
+  "name": "Cloud phone order platform (Spring Boot)",
+  "install": "cd platform && ./mvnw -B -DskipTests package",
   "terminals": [
     {
-      "name": "task-server",
-      "command": "java -cp \"out:lib/h2.jar\" com.aimovies.cloud.CloudPhoneTaskServer"
+      "name": "platform",
+      "command": "cd platform && java -jar target/platform-0.0.1-SNAPSHOT.jar"
     }
   ],
   "ports": [8080]

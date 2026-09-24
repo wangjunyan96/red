@@ -4,3 +4,5 @@ lib/
 data/*.mv.db
 data/*.trace.db
 data/*.lock.db
+platform/target/
+platform/data/
