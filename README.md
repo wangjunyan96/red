@@ -13,31 +13,52 @@ Planned later:
 
 ```text
 server/src/com/aimovies/cloud/CloudPhoneTaskServer.java   # main server code
-data/tasks.csv                                             # task seed file
+data/tasks.csv                                             # task seed file (first run only)
+lib/h2.jar                                                 # H2 JDBC driver (downloaded, gitignored)
+data/taskdb.mv.db                                          # H2 database file (created at runtime, gitignored)
 ```
+
+## Persistence
+
+Task state is stored in an embedded [H2](https://www.h2database.com/) database via
+JDBC. Claims, heartbeats, and reports are written to the database, so task state
+survives server restarts and no state is kept only in memory.
+
+`data/tasks.csv` is used **only to seed the database on first run** (when the
+`tasks` table is empty). After that, the database is the source of truth; edit
+tasks through the admin API instead of the CSV.
 
 ## Prerequisites
 
 - JDK 17+ (JDK 21 is also fine)
 - No Maven/Gradle needed
+- The H2 JDBC driver jar (`lib/h2.jar`). Download it once (needs internet access):
+
+```bash
+mkdir -p lib
+curl -fsSL -o lib/h2.jar https://repo1.maven.org/maven2/com/h2database/h2/2.2.224/h2-2.2.224.jar
+```
 
 ## Run
 
 ```bash
 cd /workspace
 mkdir -p out
-javac -d out server/src/com/aimovies/cloud/CloudPhoneTaskServer.java
-java -cp out com.aimovies.cloud.CloudPhoneTaskServer
+javac -cp lib/h2.jar -d out server/src/com/aimovies/cloud/CloudPhoneTaskServer.java
+java -cp "out:lib/h2.jar" com.aimovies.cloud.CloudPhoneTaskServer
 ```
 
 Optional environment variables:
 
 - `PORT` (default `8080`)
-- `TASK_FILE` (default `data/tasks.csv`)
+- `TASK_FILE` (default `data/tasks.csv`, used only for first-run seeding)
 - `LEASE_SECONDS` (default `300`)
 - `API_KEY` (optional, enables `X-API-Key` auth when set)
+- `DB_URL` (default `jdbc:h2:file:./data/taskdb;AUTO_SERVER=TRUE`)
+- `DB_USER` (default `sa`)
+- `DB_PASSWORD` (default empty)
 
-## Task file format
+## Task file format (seed)
 
 `data/tasks.csv`
 
@@ -47,7 +68,9 @@ qq_account_001,HF123456
 qq_account_002,HF999888
 ```
 
-Each row is one task. Tasks are claimed in row order.
+Each row is one task. On first run these rows seed the database in row order.
+Changing the CSV afterwards has no effect unless the `tasks` table is empty
+(for example, after deleting the `data/taskdb.*` files).
 
 ## API
 
@@ -168,11 +191,57 @@ Response:
 }
 ```
 
-## Notes for postponed admin features
+## Admin APIs
 
-Endpoints under `/api/v1/admin/*` currently return HTTP `501` as placeholders.
+Now that tasks are stored in the database, basic admin endpoints are available.
 
-For now, update `data/tasks.csv` directly to input account + reunion code.
+### List all tasks
+
+`GET /api/v1/admin/tasks`
+
+```json
+{
+  "tasks": [
+    {
+      "id": 1,
+      "account": "qq_account_001",
+      "reunionCode": "HF123456",
+      "status": "DONE",
+      "assignedDevice": "redfinger-01",
+      "attempts": 1,
+      "lastError": ""
+    }
+  ]
+}
+```
+
+### Add a task
+
+`POST /api/v1/admin/tasks`
+
+Request (JSON):
+
+```json
+{
+  "account": "qq_account_003",
+  "reunionCode": "HF555444"
+}
+```
+
+Response (`201 Created`):
+
+```json
+{
+  "task": {
+    "id": 3,
+    "account": "qq_account_003",
+    "reunionCode": "HF555444",
+    "status": "PENDING"
+  }
+}
+```
+
+Other `/api/v1/admin/*` paths still return HTTP `501` as placeholders.
 
 ## Auto.js cloud-phone client script
 

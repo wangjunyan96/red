@@ -10,6 +10,12 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -25,25 +31,36 @@ import java.util.regex.Pattern;
 
 /**
  * Lightweight Java server for cloud-phone task distribution.
- * No external dependencies are required; run with javac/java only.
+ *
+ * Task state is persisted in an embedded H2 database (JDBC), so claims,
+ * heartbeats, and reports survive restarts. The CSV file is used only to seed
+ * the database on first run (when the tasks table is empty).
  */
 public final class CloudPhoneTaskServer {
     private static final Pattern TASK_ACTION_PATH = Pattern.compile("^/api/v1/tasks/(\\d+)/(heartbeat|report)$");
     private static final long DEFAULT_LEASE_SECONDS = 300L;
     private static final int DEFAULT_PORT = 8080;
     private static final String DEFAULT_TASK_FILE = "data/tasks.csv";
+    private static final String DEFAULT_DB_URL = "jdbc:h2:file:./data/taskdb;AUTO_SERVER=TRUE";
 
     private CloudPhoneTaskServer() {
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, SQLException {
         int port = parsePort(System.getenv("PORT"));
         String taskFile = envOrDefault(System.getenv("TASK_FILE"), DEFAULT_TASK_FILE);
         long leaseSeconds = parseLongOrDefault(System.getenv("LEASE_SECONDS"), DEFAULT_LEASE_SECONDS);
         String apiKey = System.getenv("API_KEY");
+        String dbUrl = envOrDefault(System.getenv("DB_URL"), DEFAULT_DB_URL);
+        String dbUser = envOrDefault(System.getenv("DB_USER"), "sa");
+        String dbPassword = System.getenv("DB_PASSWORD") == null ? "" : System.getenv("DB_PASSWORD");
 
-        List<Task> tasks = TaskFileLoader.load(taskFile);
-        TaskService taskService = new TaskService(tasks, leaseSeconds);
+        Connection connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword);
+        connection.setAutoCommit(true);
+        TaskStore.initSchema(connection);
+        int seeded = TaskStore.seedIfEmpty(connection, TaskFileLoader.load(taskFile));
+
+        TaskService taskService = new TaskService(connection, leaseSeconds);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         ExecutorService executor = Executors.newFixedThreadPool(8);
@@ -70,7 +87,13 @@ public final class CloudPhoneTaskServer {
                 return;
             }
 
-            Task task = taskService.claim(deviceId);
+            Task task;
+            try {
+                task = taskService.claim(deviceId);
+            } catch (SQLException ex) {
+                sendJson(exchange, 500, "{\"error\":\"database error\"}");
+                return;
+            }
             if (task == null) {
                 sendJson(exchange, 200, "{\"task\":null}");
                 return;
@@ -92,7 +115,13 @@ public final class CloudPhoneTaskServer {
                 sendMethodNotAllowed(exchange, "GET");
                 return;
             }
-            Map<TaskStatus, Integer> stats = taskService.stats();
+            Map<TaskStatus, Integer> stats;
+            try {
+                stats = taskService.stats();
+            } catch (SQLException ex) {
+                sendJson(exchange, 500, "{\"error\":\"database error\"}");
+                return;
+            }
             String body = "{"
                 + "\"pending\":" + stats.getOrDefault(TaskStatus.PENDING, 0) + ","
                 + "\"running\":" + stats.getOrDefault(TaskStatus.RUNNING, 0) + ","
@@ -125,24 +154,62 @@ public final class CloudPhoneTaskServer {
                 return;
             }
 
-            if ("heartbeat".equals(action)) {
-                boolean ok = taskService.heartbeat(taskId, deviceId, runId);
-                sendJson(exchange, 200, "{\"ok\":" + ok + "}");
-                return;
-            }
+            try {
+                if ("heartbeat".equals(action)) {
+                    boolean ok = taskService.heartbeat(taskId, deviceId, runId);
+                    sendJson(exchange, 200, "{\"ok\":" + ok + "}");
+                    return;
+                }
 
-            String status = emptyToNull(params.get("status"));
-            String error = emptyToNull(params.get("error"));
-            if (status == null) {
-                sendJson(exchange, 400, "{\"error\":\"status is required\"}");
-                return;
+                String status = emptyToNull(params.get("status"));
+                String error = emptyToNull(params.get("error"));
+                if (status == null) {
+                    sendJson(exchange, 400, "{\"error\":\"status is required\"}");
+                    return;
+                }
+                boolean ok = taskService.report(taskId, deviceId, runId, status, error);
+                if (!ok) {
+                    sendJson(exchange, 400, "{\"ok\":false,\"error\":\"invalid task state or status\"}");
+                    return;
+                }
+                sendJson(exchange, 200, "{\"ok\":true}");
+            } catch (SQLException ex) {
+                sendJson(exchange, 500, "{\"error\":\"database error\"}");
             }
-            boolean ok = taskService.report(taskId, deviceId, runId, status, error);
-            if (!ok) {
-                sendJson(exchange, 400, "{\"ok\":false,\"error\":\"invalid task state or status\"}");
-                return;
+        }));
+
+        server.createContext("/api/v1/admin/tasks", wrapWithAuth(apiKey, exchange -> {
+            String method = exchange.getRequestMethod();
+            try {
+                if ("GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 200, "{\"tasks\":" + taskService.listTasksJson() + "}");
+                    return;
+                }
+                if ("POST".equalsIgnoreCase(method)) {
+                    Map<String, String> params = readRequestParams(exchange);
+                    String account = emptyToNull(params.get("account"));
+                    String reunionCode = emptyToNull(params.get("reunionCode"));
+                    if (account == null || reunionCode == null) {
+                        sendJson(exchange, 400, "{\"error\":\"account and reunionCode are required\"}");
+                        return;
+                    }
+                    Task created = taskService.addTask(account, reunionCode);
+                    String body = "{"
+                        + "\"task\":{"
+                        + "\"id\":" + created.id + ","
+                        + "\"account\":\"" + escapeJson(created.account) + "\","
+                        + "\"reunionCode\":\"" + escapeJson(created.reunionCode) + "\","
+                        + "\"status\":\"PENDING\""
+                        + "}"
+                        + "}";
+                    sendJson(exchange, 201, body);
+                    return;
+                }
+                exchange.getResponseHeaders().set("Allow", "GET, POST");
+                sendJson(exchange, 405, "{\"error\":\"method not allowed\"}");
+            } catch (SQLException ex) {
+                sendJson(exchange, 500, "{\"error\":\"database error\"}");
             }
-            sendJson(exchange, 200, "{\"ok\":true}");
         }));
 
         server.createContext("/api/v1/admin/", wrapWithAuth(apiKey, exchange -> {
@@ -150,15 +217,16 @@ public final class CloudPhoneTaskServer {
                 sendMethodNotAllowed(exchange, "POST");
                 return;
             }
-            sendJson(exchange, 501, "{\"error\":\"admin create/update endpoints are postponed; import tasks via data/tasks.csv for now\"}");
+            sendJson(exchange, 501, "{\"error\":\"this admin endpoint is not implemented\"}");
         }));
 
         server.createContext("/", exchange -> sendJson(exchange, 404, "{\"error\":\"not found\"}"));
         server.start();
         System.out.println("CloudPhoneTaskServer started");
         System.out.println("Port: " + port);
-        System.out.println("Task file: " + taskFile);
-        System.out.println("Loaded tasks: " + tasks.size());
+        System.out.println("Database: " + dbUrl);
+        System.out.println("Seed file: " + taskFile);
+        System.out.println("Seeded tasks: " + seeded);
         System.out.println("Lease seconds: " + leaseSeconds);
         if (apiKey != null && !apiKey.isEmpty()) {
             System.out.println("API key auth: enabled");
@@ -287,6 +355,9 @@ public final class CloudPhoneTaskServer {
     }
 
     private static String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
         return value
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
@@ -309,116 +380,260 @@ public final class CloudPhoneTaskServer {
         FAILED
     }
 
+    /** Minimal view of a task returned to clients. */
     private static final class Task {
         private final long id;
         private final String account;
         private final String reunionCode;
-        private TaskStatus status;
-        private String assignedDevice;
-        private String runId;
-        private long leaseUntilEpochSecond;
-        private int attempts;
-        private String lastError;
+        private final String runId;
 
-        private Task(long id, String account, String reunionCode) {
+        private Task(long id, String account, String reunionCode, String runId) {
             this.id = id;
             this.account = account;
             this.reunionCode = reunionCode;
-            this.status = TaskStatus.PENDING;
+            this.runId = runId;
         }
     }
 
+    /** A row parsed from the seed CSV file. */
+    private static final class SeedRow {
+        private final String account;
+        private final String reunionCode;
+
+        private SeedRow(String account, String reunionCode) {
+            this.account = account;
+            this.reunionCode = reunionCode;
+        }
+    }
+
+    /**
+     * Database-backed task operations. Methods are synchronized so a single
+     * server instance never double-claims a row; the conditional UPDATEs also
+     * guard correctness under concurrent access.
+     */
     private static final class TaskService {
-        private final List<Task> tasks;
+        private final Connection connection;
         private final long leaseSeconds;
 
-        private TaskService(List<Task> tasks, long leaseSeconds) {
-            this.tasks = tasks;
+        private TaskService(Connection connection, long leaseSeconds) {
+            this.connection = connection;
             this.leaseSeconds = leaseSeconds;
         }
 
-        private synchronized Task claim(String deviceId) {
+        private synchronized Task claim(String deviceId) throws SQLException {
             long now = Instant.now().getEpochSecond();
-            for (Task task : tasks) {
-                boolean pending = task.status == TaskStatus.PENDING;
-                boolean expiredRunning = task.status == TaskStatus.RUNNING && task.leaseUntilEpochSecond < now;
-                if (!pending && !expiredRunning) {
-                    continue;
+            connection.setAutoCommit(false);
+            try {
+                long id;
+                String account;
+                String reunionCode;
+                String selectSql = "SELECT id, account, reunion_code FROM tasks "
+                    + "WHERE status = 'PENDING' OR (status = 'RUNNING' AND lease_until < ?) "
+                    + "ORDER BY id LIMIT 1 FOR UPDATE";
+                try (PreparedStatement select = connection.prepareStatement(selectSql)) {
+                    select.setLong(1, now);
+                    try (ResultSet rs = select.executeQuery()) {
+                        if (!rs.next()) {
+                            connection.commit();
+                            return null;
+                        }
+                        id = rs.getLong("id");
+                        account = rs.getString("account");
+                        reunionCode = rs.getString("reunion_code");
+                    }
                 }
-                task.status = TaskStatus.RUNNING;
-                task.assignedDevice = deviceId;
-                task.runId = UUID.randomUUID().toString();
-                task.leaseUntilEpochSecond = now + leaseSeconds;
-                task.attempts += 1;
-                return task;
+
+                String runId = UUID.randomUUID().toString();
+                long leaseUntil = now + leaseSeconds;
+                String updateSql = "UPDATE tasks SET status = 'RUNNING', assigned_device = ?, run_id = ?, "
+                    + "lease_until = ?, attempts = attempts + 1 WHERE id = ?";
+                try (PreparedStatement update = connection.prepareStatement(updateSql)) {
+                    update.setString(1, deviceId);
+                    update.setString(2, runId);
+                    update.setLong(3, leaseUntil);
+                    update.setLong(4, id);
+                    update.executeUpdate();
+                }
+                connection.commit();
+                return new Task(id, account, reunionCode, runId);
+            } catch (SQLException ex) {
+                connection.rollback();
+                throw ex;
+            } finally {
+                connection.setAutoCommit(true);
             }
-            return null;
         }
 
-        private synchronized boolean heartbeat(long taskId, String deviceId, String runId) {
-            Task task = find(taskId);
-            if (task == null || task.status != TaskStatus.RUNNING) {
-                return false;
+        private synchronized boolean heartbeat(long taskId, String deviceId, String runId) throws SQLException {
+            long leaseUntil = Instant.now().getEpochSecond() + leaseSeconds;
+            String sql = "UPDATE tasks SET lease_until = ? "
+                + "WHERE id = ? AND status = 'RUNNING' AND assigned_device = ? AND run_id = ?";
+            try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                ps.setLong(1, leaseUntil);
+                ps.setLong(2, taskId);
+                ps.setString(3, deviceId);
+                ps.setString(4, runId);
+                return ps.executeUpdate() == 1;
             }
-            if (!deviceId.equals(task.assignedDevice) || !runId.equals(task.runId)) {
-                return false;
-            }
-            task.leaseUntilEpochSecond = Instant.now().getEpochSecond() + leaseSeconds;
-            return true;
         }
 
-        private synchronized boolean report(long taskId, String deviceId, String runId, String status, String error) {
-            Task task = find(taskId);
-            if (task == null || task.status != TaskStatus.RUNNING) {
-                return false;
-            }
-            if (!deviceId.equals(task.assignedDevice) || !runId.equals(task.runId)) {
-                return false;
-            }
+        private synchronized boolean report(long taskId, String deviceId, String runId, String status, String error)
+                throws SQLException {
+            String newStatus;
+            String lastError;
             if ("done".equalsIgnoreCase(status)) {
-                task.status = TaskStatus.DONE;
-                task.lastError = null;
+                newStatus = "DONE";
+                lastError = null;
             } else if ("failed".equalsIgnoreCase(status)) {
-                task.status = TaskStatus.FAILED;
-                task.lastError = error;
+                newStatus = "FAILED";
+                lastError = error;
             } else {
                 return false;
             }
-            task.leaseUntilEpochSecond = 0;
-            return true;
+            String sql = "UPDATE tasks SET status = ?, last_error = ?, lease_until = 0 "
+                + "WHERE id = ? AND status = 'RUNNING' AND assigned_device = ? AND run_id = ?";
+            try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                ps.setString(1, newStatus);
+                ps.setString(2, lastError);
+                ps.setLong(3, taskId);
+                ps.setString(4, deviceId);
+                ps.setString(5, runId);
+                return ps.executeUpdate() == 1;
+            }
         }
 
-        private synchronized Map<TaskStatus, Integer> stats() {
+        private synchronized Map<TaskStatus, Integer> stats() throws SQLException {
             Map<TaskStatus, Integer> map = new EnumMap<>(TaskStatus.class);
-            for (Task task : tasks) {
-                map.put(task.status, map.getOrDefault(task.status, 0) + 1);
+            String sql = "SELECT status, COUNT(*) AS c FROM tasks GROUP BY status";
+            try (PreparedStatement ps = connection.prepareStatement(sql);
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String status = rs.getString("status");
+                    int count = rs.getInt("c");
+                    try {
+                        map.put(TaskStatus.valueOf(status), count);
+                    } catch (IllegalArgumentException ignore) {
+                        // Unknown status values are ignored in the summary.
+                    }
+                }
             }
             return map;
         }
 
-        private Task find(long id) {
-            for (Task task : tasks) {
-                if (task.id == id) {
-                    return task;
+        private synchronized Task addTask(String account, String reunionCode) throws SQLException {
+            long nextId;
+            try (PreparedStatement ps = connection.prepareStatement("SELECT COALESCE(MAX(id), 0) + 1 AS next FROM tasks");
+                 ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                nextId = rs.getLong("next");
+            }
+            String sql = "INSERT INTO tasks (id, account, reunion_code, status, lease_until, attempts) "
+                + "VALUES (?, ?, ?, 'PENDING', 0, 0)";
+            try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                ps.setLong(1, nextId);
+                ps.setString(2, account);
+                ps.setString(3, reunionCode);
+                ps.executeUpdate();
+            }
+            return new Task(nextId, account, reunionCode, null);
+        }
+
+        private synchronized String listTasksJson() throws SQLException {
+            StringBuilder sb = new StringBuilder("[");
+            String sql = "SELECT id, account, reunion_code, status, assigned_device, attempts, last_error "
+                + "FROM tasks ORDER BY id";
+            try (PreparedStatement ps = connection.prepareStatement(sql);
+                 ResultSet rs = ps.executeQuery()) {
+                boolean first = true;
+                while (rs.next()) {
+                    if (!first) {
+                        sb.append(",");
+                    }
+                    first = false;
+                    sb.append("{")
+                        .append("\"id\":").append(rs.getLong("id")).append(",")
+                        .append("\"account\":\"").append(escapeJson(rs.getString("account"))).append("\",")
+                        .append("\"reunionCode\":\"").append(escapeJson(rs.getString("reunion_code"))).append("\",")
+                        .append("\"status\":\"").append(escapeJson(rs.getString("status"))).append("\",")
+                        .append("\"assignedDevice\":\"").append(escapeJson(rs.getString("assigned_device"))).append("\",")
+                        .append("\"attempts\":").append(rs.getInt("attempts")).append(",")
+                        .append("\"lastError\":\"").append(escapeJson(rs.getString("last_error"))).append("\"")
+                        .append("}");
                 }
             }
-            return null;
+            sb.append("]");
+            return sb.toString();
         }
     }
 
+    /** Schema creation and one-time CSV seeding. */
+    private static final class TaskStore {
+        private TaskStore() {
+        }
+
+        private static void initSchema(Connection connection) throws SQLException {
+            String ddl = "CREATE TABLE IF NOT EXISTS tasks ("
+                + "id BIGINT PRIMARY KEY,"
+                + "account VARCHAR(255) NOT NULL,"
+                + "reunion_code VARCHAR(255) NOT NULL,"
+                + "status VARCHAR(16) NOT NULL DEFAULT 'PENDING',"
+                + "assigned_device VARCHAR(255),"
+                + "run_id VARCHAR(64),"
+                + "lease_until BIGINT NOT NULL DEFAULT 0,"
+                + "attempts INT NOT NULL DEFAULT 0,"
+                + "last_error CLOB"
+                + ")";
+            try (Statement st = connection.createStatement()) {
+                st.execute(ddl);
+            }
+        }
+
+        private static int seedIfEmpty(Connection connection, List<SeedRow> rows) throws SQLException {
+            try (Statement st = connection.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM tasks")) {
+                rs.next();
+                if (rs.getInt(1) > 0) {
+                    return 0;
+                }
+            }
+            String sql = "INSERT INTO tasks (id, account, reunion_code, status, lease_until, attempts) "
+                + "VALUES (?, ?, ?, 'PENDING', 0, 0)";
+            int inserted = 0;
+            connection.setAutoCommit(false);
+            try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                long id = 1;
+                for (SeedRow row : rows) {
+                    ps.setLong(1, id++);
+                    ps.setString(2, row.account);
+                    ps.setString(3, row.reunionCode);
+                    ps.addBatch();
+                    inserted++;
+                }
+                ps.executeBatch();
+                connection.commit();
+            } catch (SQLException ex) {
+                connection.rollback();
+                throw ex;
+            } finally {
+                connection.setAutoCommit(true);
+            }
+            return inserted;
+        }
+    }
+
+    /** Parses the seed CSV file into rows (account, reunionCode). */
     private static final class TaskFileLoader {
         private TaskFileLoader() {
         }
 
-        private static List<Task> load(String filePath) throws IOException {
+        private static List<SeedRow> load(String filePath) throws IOException {
             Path path = Path.of(filePath);
             if (!Files.exists(path)) {
                 throw new IOException("Task file not found: " + path.toAbsolutePath());
             }
 
-            List<Task> tasks = new ArrayList<>();
+            List<SeedRow> rows = new ArrayList<>();
             List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
-            long id = 1;
             for (String rawLine : lines) {
                 String line = rawLine.trim();
                 if (line.isEmpty() || line.startsWith("#")) {
@@ -436,9 +651,9 @@ public final class CloudPhoneTaskServer {
                 if (account.isEmpty() || reunionCode.isEmpty()) {
                     continue;
                 }
-                tasks.add(new Task(id++, account, reunionCode));
+                rows.add(new SeedRow(account, reunionCode));
             }
-            return tasks;
+            return rows;
         }
     }
 }
