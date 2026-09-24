@@ -572,7 +572,7 @@ public final class CloudPhoneTaskServer {
         }
 
         private static void initSchema(Connection connection) throws SQLException {
-            String ddl = "CREATE TABLE IF NOT EXISTS tasks ("
+            String tasksDdl = "CREATE TABLE IF NOT EXISTS tasks ("
                 + "id BIGINT PRIMARY KEY,"
                 + "account VARCHAR(255) NOT NULL,"
                 + "reunion_code VARCHAR(255) NOT NULL,"
@@ -583,8 +583,27 @@ public final class CloudPhoneTaskServer {
                 + "attempts INT NOT NULL DEFAULT 0,"
                 + "last_error CLOB"
                 + ")";
+
+            // 数据号表: one QQ data account (login token) and its association state.
+            // status values: UNLINKED(未关联), LINKED(已关联), BOUND(已绑定), ERROR(错误).
+            String dataAccountsDdl = "CREATE TABLE IF NOT EXISTS data_accounts ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                + "token VARCHAR(1024) NOT NULL UNIQUE,"
+                + "status VARCHAR(16) NOT NULL DEFAULT 'UNLINKED',"
+                + "reunion_code VARCHAR(255)"
+                + ")";
+
+            // 重逢码表: one reunion code and how many accounts are bound to it.
+            String reunionCodesDdl = "CREATE TABLE IF NOT EXISTS reunion_codes ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                + "reunion_code VARCHAR(255) NOT NULL UNIQUE,"
+                + "bind_count INT NOT NULL DEFAULT 0"
+                + ")";
+
             try (Statement st = connection.createStatement()) {
-                st.execute(ddl);
+                st.execute(tasksDdl);
+                st.execute(dataAccountsDdl);
+                st.execute(reunionCodesDdl);
             }
         }
 

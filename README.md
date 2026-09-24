@@ -28,6 +28,41 @@ survives server restarts and no state is kept only in memory.
 `tasks` table is empty). After that, the database is the source of truth; edit
 tasks through the admin API instead of the CSV.
 
+### Schema
+
+Tables are created automatically on startup (`CREATE TABLE IF NOT EXISTS`).
+
+`tasks` — work queue consumed by cloud phones:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | BIGINT PK | seeded in CSV row order |
+| `account` | VARCHAR | login account |
+| `reunion_code` | VARCHAR | reunion code |
+| `status` | VARCHAR | `PENDING` / `RUNNING` / `DONE` / `FAILED` |
+| `assigned_device` | VARCHAR | device holding the lease |
+| `run_id` | VARCHAR | claim token |
+| `lease_until` | BIGINT | lease expiry (epoch seconds) |
+| `attempts` | INT | claim count |
+| `last_error` | CLOB | last failure message |
+
+`data_accounts` (数据号表) — one data account (login token) and its association state:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | BIGINT PK | auto-increment (主键) |
+| `token` | VARCHAR | account/token (账号), unique |
+| `status` | VARCHAR | `UNLINKED`未关联 / `LINKED`已关联 / `BOUND`已绑定 / `ERROR`错误 (状态) |
+| `reunion_code` | VARCHAR | reunion code (重逢码) |
+
+`reunion_codes` (重逢码表) — one reunion code and its bind count:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | BIGINT PK | auto-increment (主键) |
+| `reunion_code` | VARCHAR | reunion code (重逢码), unique |
+| `bind_count` | INT | number of bound accounts (绑定数量), default 0 |
+
 ## Prerequisites
 
 - JDK 17+ (JDK 21 is also fine)
