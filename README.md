@@ -12,10 +12,14 @@ Planned later:
 ## Directory layout
 
 ```text
-server/src/com/aimovies/cloud/CloudPhoneTaskServer.java   # main server code
+server/src/com/aimovies/cloud/CloudPhoneTaskSpringBootApplication.java  # Spring Boot entry
+server/src/com/aimovies/cloud/TaskApiController.java      # /api/v1 tasks + health
+server/src/com/aimovies/cloud/AdminApiController.java     # /api/v1/admin endpoints
+server/src/com/aimovies/cloud/TaskService.java            # JDBC task service logic
+server/src/com/aimovies/cloud/CloudPhoneTaskServer.java   # legacy standalone HttpServer (kept for reference)
 data/tasks.csv                                             # task seed file (first run only)
-lib/h2.jar                                                 # H2 JDBC driver (downloaded, gitignored)
 data/taskdb.mv.db                                          # H2 database file (created at runtime, gitignored)
+pom.xml                                                    # Maven + Spring Boot build config
 ```
 
 ## Persistence
@@ -66,21 +70,20 @@ Tables are created automatically on startup (`CREATE TABLE IF NOT EXISTS`).
 ## Prerequisites
 
 - JDK 17+ (JDK 21 is also fine)
-- No Maven/Gradle needed
-- The H2 JDBC driver jar (`lib/h2.jar`). Download it once (needs internet access):
+- Maven 3.9+
 
-```bash
-mkdir -p lib
-curl -fsSL -o lib/h2.jar https://repo1.maven.org/maven2/com/h2database/h2/2.2.224/h2-2.2.224.jar
-```
-
-## Run
+## Run (Spring Boot)
 
 ```bash
 cd /workspace
-mkdir -p out
-javac -cp lib/h2.jar -d out server/src/com/aimovies/cloud/CloudPhoneTaskServer.java
-java -cp "out:lib/h2.jar" com.aimovies.cloud.CloudPhoneTaskServer
+mvn spring-boot:run
+```
+
+Package executable jar:
+
+```bash
+mvn clean package
+java -jar target/cloud-phone-task-server-1.0.0.jar
 ```
 
 Optional environment variables:
@@ -284,12 +287,10 @@ Script file:
 
 ```text
 scripts/autojs/hero_killer_reunion_client.js
-scripts/autojs/hero_killer_reunion_client_v2_cn.js
-scripts/autojs/hero_killer_single_run_verify_cn.js
 ```
 
 What it does:
-- claims dynamic task data (`account`, `reunionCode`) from `/api/v1/tasks/claim`
+- claims dynamic task data (`account` token, `reunionCode`) from `/api/v1/tasks/claim`
 - runs login + reunion-code flow in game
 - sends heartbeat while running
 - reports `done` or `failed` to `/api/v1/tasks/{id}/report`
@@ -298,47 +299,3 @@ Before running:
 1. update `CONFIG.SERVER_BASE` and `CONFIG.DEVICE_ID`
 2. set `CONFIG.API_KEY` if server auth is enabled
 3. adjust selector regex values in `CONFIG.SELECTORS` to your real game/login-helper UI
-
-V2 note:
-- `hero_killer_reunion_client_v2_cn.js` uses fully Chinese inline comments
-- the game flow is explicitly mapped to the 13 business steps
-
-### Test script without backend (offline mode)
-
-If backend is not ready yet, use offline mode in:
-`scripts/autojs/hero_killer_reunion_client_v2_cn.js`
-
-1) set:
-- `LOCAL_TEST_MODE: true`
-- `LOCAL_TEST_EXIT_WHEN_DONE: true` (optional, exit after all local tasks)
-
-2) edit local tasks:
-
-```js
-LOCAL_TEST_TASKS: [
-  { account: "qq_test_001", reunionCode: "74061c8f23" },
-  { account: "qq_test_002", reunionCode: "abc1234567" }
-]
-```
-
-3) run script in Auto.js with accessibility/screenshot permission.
-
-In offline mode:
-- no request to `/health`/`/claim`/`/heartbeat`/`/report`
-- tasks are pulled from `LOCAL_TEST_TASKS`
-- report output is printed to console log only
-
-### Single account / single run verify script
-
-Use this file for one-shot validation without backend:
-
-`scripts/autojs/hero_killer_single_run_verify_cn.js`
-
-Edit before run:
-- `LOGIN_TOKEN` (account token for login-helper)
-- `REUNION_CODE`
-
-Behavior:
-- execute the full 13-step flow once
-- auto exit after success/failure
-- save failure screenshot to `/sdcard/Download/hs_single_run_failed.png`

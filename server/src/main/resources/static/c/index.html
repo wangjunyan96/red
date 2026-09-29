@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>网页下单</title>
+  <link rel="stylesheet" href="/c/css/app.css">
+</head>
+<body>
+  <div id="auth-page" class="auth-page">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="logo">下</span>
+        <div>
+          <h1>网页下单</h1>
+          <p>发口令，云手机帮你跑任务</p>
+        </div>
+      </div>
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" data-tab="login">登录</button>
+        <button type="button" class="auth-tab" data-tab="register">注册</button>
+      </div>
+      <form id="login-form" class="auth-form">
+        <label>手机号<input name="phone" type="tel" maxlength="11" required placeholder="11 位手机号"></label>
+        <label>密码<input name="password" type="password" minlength="6" required placeholder="至少 6 位"></label>
+        <button type="submit" class="btn primary">进入</button>
+      </form>
+      <form id="register-form" class="auth-form hidden">
+        <label>手机号<input name="phone" type="tel" maxlength="11" required placeholder="11 位手机号"></label>
+        <label>密码<input name="password" type="password" minlength="6" required placeholder="6~64 位"></label>
+        <button type="submit" class="btn primary">注册并进入</button>
+      </form>
+      <p id="auth-error" class="banner error hidden"></p>
+    </div>
+  </div>
+
+  <div id="app-page" class="app-page hidden">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo">下</span>
+          <div>
+            <strong>网页下单</strong>
+            <small>在线</small>
+          </div>
+        </div>
+        <div class="user-chip">
+          <span id="user-avatar" class="avatar">U</span>
+          <span class="level">普通</span>
+          <span id="header-balance" class="balance">¥0.00</span>
+          <button type="button" id="logout-btn" class="btn ghost">退出</button>
+        </div>
+      </header>
+
+      <nav class="main-tabs">
+        <button type="button" class="main-tab active" data-view="chat">聊天下单</button>
+        <button type="button" class="main-tab" data-view="projects">项目中心</button>
+      </nav>
+
+      <div class="workspace">
+        <section id="view-chat" class="view chat-view">
+          <div id="chat-list" class="chat-list"></div>
+          <form id="chat-form" class="composer">
+            <input id="chat-input" name="text" maxlength="500" placeholder="发送重逢码或口令…" autocomplete="off">
+            <button type="submit" class="btn primary send">发送</button>
+          </form>
+        </section>
+
+        <section id="view-projects" class="view projects-view hidden">
+          <div id="project-list" class="project-list"></div>
+        </section>
+      </div>
+
+      <nav class="dock">
+        <button type="button" data-sheet="keywords">#<span>关键词</span></button>
+        <button type="button" data-sheet="recharge">充<span>充值</span></button>
+        <button type="button" data-sheet="card">卡<span>卡密</span></button>
+        <button type="button" data-sheet="orders">单<span>订单</span></button>
+      </nav>
+    </div>
+  </div>
+
+  <div id="sheet-mask" class="sheet-mask hidden"></div>
+  <aside id="sheet" class="sheet hidden">
+    <header>
+      <h3 id="sheet-title">标题</h3>
+      <button type="button" id="sheet-close" class="btn ghost">关闭</button>
+    </header>
+    <div id="sheet-body" class="sheet-body"></div>
+  </aside>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/c/js/app.js"></script>
+</body>
+</html>
