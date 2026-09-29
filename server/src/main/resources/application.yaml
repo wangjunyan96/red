@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: cloud-phone-task-server
+  sql:
+    init:
+      # 关闭启动期强制执行 schema.sql，避免 MySQL 不通时进程直接退出。
+      mode: never
+  datasource:
+    url: jdbc:mysql://101.201.102.6:3306/red?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: 123456Aa!
+    hikari:
+      # -1：建连接池时不探测数据库，MySQL 未启动也能把 Web 服务拉起来。
+      initialization-fail-timeout: -1
+      connection-timeout: 5000
+
+server:
+  port: 8889
+
+# 云手机任务租约与首次种子文件
+app:
+  task:
+    lease-seconds: 300
+    seed-file: data/tasks.csv
