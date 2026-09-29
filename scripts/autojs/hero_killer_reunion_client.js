@@ -38,8 +38,7 @@ const CONFIG = {
   // 若服务端开启 API_KEY，这里填写同样的 key；未开启则留空
   API_KEY: "",
 
-  // 云手机唯一标识。留空或填 auto：每台自动生成并记住，多机可共用脚本。
-  // 只有需要人工命名时才填写，例如 redfinger-01，且每台必须不同。
+  // 云手机唯一标识。留空则用本机 AndroidId（多机可共用脚本）。要人工命名时每台填不同值。
   DEVICE_ID: "",
 
   // 领取时只拿本脚本能执行的任务，避免和后续其它游戏/玩法抢队列
@@ -184,27 +183,33 @@ function sleepShort(ms) {
   sleep(ms || CONFIG.PAGE_WAIT_MS);
 }
 
-/** 本机设备名：手动配置优先，否则用 storages 记住随机名。多机可共用脚本。 */
-function resolveDeviceId() {
+/**
+ * 本机设备名。CONFIG.DEVICE_ID 有值则用配置；否则用 AndroidId。
+ * 不用 files / storages，Auto.js 6 访问这两类对象容易报「无效的对象属性」。
+ */
+var cachedDeviceId = "";
+function getDeviceId() {
+  if (cachedDeviceId) {
+    return cachedDeviceId;
+  }
   var configured = String(CONFIG.DEVICE_ID || "").trim();
   if (configured && configured.toLowerCase() !== "auto") {
-    return configured;
+    cachedDeviceId = configured;
+    return cachedDeviceId;
   }
+  var androidId = "";
   try {
-    var store = storages.create("red_cloud_device");
-    var saved = store.get("deviceId", "");
-    if (saved) {
-      return String(saved);
-    }
-    var id = "phone-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e9).toString(36);
-    store.put("deviceId", id);
-    return id;
+    androidId = String(device.getAndroidId() || "").trim();
   } catch (e) {
-    return "phone-" + Date.now().toString(36);
+    androidId = "";
   }
+  if (androidId && androidId !== "null" && androidId.toLowerCase() !== "unknown") {
+    cachedDeviceId = "phone-" + androidId;
+    return cachedDeviceId;
+  }
+  cachedDeviceId = "phone-" + Date.now();
+  return cachedDeviceId;
 }
-
-var DEVICE_ID = resolveDeviceId();
 
 /** 点击节点中心点。 */
 function clickCenter(node) {
@@ -433,7 +438,7 @@ function startHeartbeatLoop(taskId, runId, stopRef) {
       if (stopRef.stop) break;
       try {
         const res = httpPostJson("/tasks/" + taskId + "/heartbeat", {
-          deviceId: DEVICE_ID,
+          deviceId: getDeviceId(),
           runId: runId
         });
         log("heartbeat: " + res.bodyRaw);
@@ -447,7 +452,7 @@ function startHeartbeatLoop(taskId, runId, stopRef) {
 /** 领取任务：只领英雄杀-结义。返回 {id, account, reunionCode, runId}，队列空则返回 null。 */
 function claimTask() {
   const res = httpPostJson("/tasks/claim", {
-    deviceId: DEVICE_ID,
+    deviceId: getDeviceId(),
     gameCode: CONFIG.GAME_CODE,
     taskType: CONFIG.TASK_TYPE
   });
@@ -460,7 +465,7 @@ function claimTask() {
 /** 上报任务结果。 */
 function reportTask(taskId, runId, status, errorMsg) {
   const payload = {
-    deviceId: DEVICE_ID,
+    deviceId: getDeviceId(),
     runId: runId,
     status: status
   };
@@ -808,7 +813,7 @@ function runFlowForTask(task) {
  * 主循环：健康检查 -> 领取任务 -> 执行 -> 上报 -> 再领下一条。
  */
 function mainLoop() {
-  log("本机设备名: " + DEVICE_ID);
+  log("本机设备名: " + getDeviceId());
   const health = httpGet("/health");
   log("服务健康检查: " + health.bodyRaw);
 
