@@ -175,7 +175,8 @@ public class TaskService {
 
     /**
      * 后台新增任务：按注册表校验 payload。
-     * 结义等配置了 tokenType 的任务，从对应 Token 库锁未关联号，一条重逢码一条任务。
+     * 配置了 tokenType 的任务从对应 Token 库锁未关联号。
+     * 结义按重逢码条数建任务；天机等按任务条数建任务。
      */
     public synchronized List<TaskClaim> addTasks(String gameCode, String taskType, Map<String, String> rawPayload) {
         String game = catalog.requireGame(gameCode).code();
@@ -184,10 +185,14 @@ public class TaskService {
         Map<String, String> payload = catalog.validatePayload(game, type, rawPayload);
         if (def.allocateFromTokenPool()) {
             List<String> codes = parseReunionCodes(payload.get("reunionCodes"));
-            if (codes.isEmpty()) {
+            boolean needsReunionCodes = def.fields().stream().anyMatch(field -> "reunionCodes".equals(field.key()));
+            if (needsReunionCodes && codes.isEmpty()) {
                 throw new IllegalArgumentException("请输入重逢码");
             }
-            List<TaskClaim> created = transactionTemplate.execute(status -> createPooledTasks(game, type, def.tokenType(), codes));
+            int count = codes.isEmpty() ? parseTaskCount(payload.get("count")) : codes.size();
+            List<TaskClaim> created = transactionTemplate.execute(
+                status -> createPooledTasks(game, type, def.tokenType(), count, codes)
+            );
             return created == null ? List.of() : created;
         }
         return List.of(insertManualTask(game, type, payload));
@@ -387,23 +392,48 @@ public class TaskService {
         return tokens.isEmpty() ? null : tokens.get(0);
     }
 
-    private List<TaskClaim> createPooledTasks(String game, String type, String tokenType, List<String> codes) {
-        List<TokenService.PickedToken> tokens = tokenService.lockUnlinked(tokenType, codes.size());
-        if (tokens.size() < codes.size()) {
+    private int parseTaskCount(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return 1;
+        }
+        try {
+            int count = Integer.parseInt(raw.trim());
+            if (count < 1 || count > 500) {
+                throw new IllegalArgumentException("任务条数需为 1~500");
+            }
+            return count;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("任务条数必须是正整数");
+        }
+    }
+
+    private List<TaskClaim> createPooledTasks(
+        String game,
+        String type,
+        String tokenType,
+        int count,
+        List<String> codes
+    ) {
+        List<TokenService.PickedToken> tokens = tokenService.lockUnlinked(tokenType, count);
+        if (tokens.size() < count) {
             String typeName = tokenTypeCatalog.name(tokenType);
             throw new IllegalArgumentException(
-                "【" + typeName + "】可用 Token 不足：需要 " + codes.size()
+                "【" + typeName + "】可用 Token 不足：需要 " + count
                     + " 个，当前未关联仅 " + tokens.size() + " 个，请先导入 Token"
             );
         }
         List<TaskClaim> created = new ArrayList<>();
-        for (int i = 0; i < codes.size(); i++) {
-            String reunionCode = codes.get(i);
+        for (int i = 0; i < count; i++) {
+            String reunionCode = (codes != null && i < codes.size()) ? codes.get(i) : null;
             TokenService.PickedToken picked = tokens.get(i);
-            upsertReunionCode(reunionCode);
+            if (!isBlank(reunionCode)) {
+                upsertReunionCode(reunionCode);
+            }
             Map<String, String> payload = new LinkedHashMap<>();
             payload.put("account", picked.token());
-            payload.put("reunionCode", reunionCode);
+            if (!isBlank(reunionCode)) {
+                payload.put("reunionCode", reunionCode);
+            }
             created.add(insertRow(game, type, picked.token(), reunionCode, payload));
             tokenService.markLinked(picked.id(), reunionCode);
         }

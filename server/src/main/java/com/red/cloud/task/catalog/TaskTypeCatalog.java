@@ -17,6 +17,7 @@ import java.util.Map;
 public class TaskTypeCatalog {
     public static final String GAME_HERO_KILLER = "hero_killer";
     public static final String TYPE_REUNION = "reunion";
+    public static final String TYPE_TIANJI = "tianji";
 
     private final List<GameDef> games = List.of(
         new GameDef(
@@ -31,9 +32,16 @@ public class TaskTypeCatalog {
                         new TaskFieldDef("reunionCodes", "重逢码", "textarea", true, "每行一个，例如 HF123456")
                     ),
                     "hero_killer"
+                ),
+                new TaskTypeDef(
+                    TYPE_TIANJI,
+                    "天机",
+                    "无需填写 Token，系统从英雄杀 Token 库自动分配未关联数据号。当前脚本执行到进入大厅为止。",
+                    List.of(
+                        new TaskFieldDef("count", "任务条数", "text", false, "默认 1，每条分配一个 Token")
+                    ),
+                    "hero_killer"
                 )
-                // 英雄杀后续任务在此追加，例如：
-                // new TaskTypeDef("daily_sign", "每日签到", "...", List.of(...))
             )
         )
         // 其它游戏在此追加，例如：

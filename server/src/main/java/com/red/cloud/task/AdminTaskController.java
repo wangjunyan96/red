@@ -62,7 +62,7 @@ public class AdminTaskController {
     }
 
     /**
-     * 新增待领取任务。结义可一次提交多个重逢码，每条分配一个 Token。
+     * 新增待领取任务。结义按重逢码条数分配 Token；天机按任务条数分配 Token。
      * body: { gameCode, taskType, payload }
      */
     @PostMapping
