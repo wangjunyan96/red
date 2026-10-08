@@ -1,72 +1,166 @@
 "auto";
 
 /**
- * Hero Killer cloud-phone automation client (Auto.js)
+ * 英雄杀云手机自动化脚本（唯一客户端）
+ * ------------------------------------------------------------
+ * 目标：从服务端动态领取账号 token 与重逢码，按 13 步业务流程执行后回传结果。
  *
- * Workflow:
- * 1) Claim account + reunion code from Java server
- * 2) Run game flow:
- *    launch game -> QQ login -> agreement -> login helper -> game lobby
- *    -> friends -> reunion popup -> fill code -> confirm
- *    -> close retry popup -> back to lobby -> profile -> switch account
- * 3) Report success/failed to server
+ * 业务流程：
+ * 1. 打开游戏
+ * 2. 进入登录页面（已在大厅则自动跳过登录相关步骤）
+ * 3. 勾选协议
+ * 4. 选择 QQ 登录
+ * 5. 自动拉起登号器
+ * 6. 填写账号 token，点击 OP 授权
+ * 7. 进入游戏大厅
+ * 8. 点击左下角好友
+ * 9. 进入好友页后，点击左侧第二个按钮（广结好友）
+ * 10. 弹窗中填入重逢码并点击确定
+ * 11. 关闭重试弹窗
+ * 12. 返回大厅，进入个人中心并切换账号
+ * 13. 返回至登录页面
  *
- * IMPORTANT:
- * - Update selectors in CONFIG.SELECTORS to match your real UI.
- * - Some game pages are OpenGL and may require OCR/image matching fallback.
+ * 运行模式：只从服务端领取本脚本对应的任务（gameCode=hero_killer, taskType=reunion），执行中心跳，结束后上报。
+ *
+ * 说明：
+ * - SERVER_BASE 改成当前服务地址。DEVICE_ID 建议留空：每台云手机会自动生成并写到本地，多机可共用同一份脚本
+ * - 若要手动指定，填写互不相同的名字，例如 redfinger-01、redfinger-02
+ * - 游戏自绘页优先走 COORD_ONLY_MODE 坐标点击
  */
 
 /**
- * Runtime configuration.
- *
- * Tip:
- * - First adjust SERVER_BASE / DEVICE_ID / API_KEY.
- * - Then tune SELECTORS with your real UI text.
+ * 全局配置区（先改这里）
  */
 const CONFIG = {
-  SERVER_BASE: "http://127.0.0.1:8080/api/v1",
-  API_KEY: "", // Optional. Set if server has API_KEY enabled.
-  DEVICE_ID: "redfinger-01",
+  // Java 服务端基础地址，需与当前服务端口一致
+  SERVER_BASE: "http://101.201.102.6:8889/api/v1",
+
+  // 若服务端开启 API_KEY，这里填写同样的 key；未开启则留空
+  API_KEY: "",
+
+  // 云手机唯一标识。留空则用本机 AndroidId（多机可共用脚本）。要人工命名时每台填不同值。
+  DEVICE_ID: "",
+
+  // 领取时只拿本脚本能执行的任务，避免和后续其它游戏/玩法抢队列
+  GAME_CODE: "hero_killer",
+  TASK_TYPE: "reunion",
+
+  // 游戏 App 名称（按云手机实际名称修改）
   GAME_APP_NAME: "英雄杀",
+
+  // 桌面图标文案兜底（launchApp 失败时点击）
+  GAME_ICON_TEXT_FALLBACK: /(英雄杀|英雄sha)/,
+
+  // 可选：登号器包名。知道就填，稳定性更高；留空则靠页面元素判断
+  LOGIN_HELPER_PACKAGE: "",
+
+  // 轮询无任务时等待间隔
   POLL_INTERVAL_MS: 5000,
+
+  // 心跳间隔（续租任务，防止服务端把任务回收）
   HEARTBEAT_INTERVAL_MS: 60000,
+
+  // 单步默认等待超时
   ACTION_TIMEOUT_MS: 15000,
+
+  // 启动后识别「登录页 / 大厅」的窗口，放宽避免慢启动误判
+  ENTRY_DETECT_TIMEOUT_MS: 45000,
+
+  // 坐标优先模式：true 时弱化文字识别，避免自绘层识别失败导致中断
+  COORD_ONLY_MODE: true,
+
+  // 坐标模式下，登录后固定等待进入大厅的时长
+  WAIT_AFTER_LOGIN_MS: 12000,
+
+  // 点击后短等待，给 UI 渲染时间
   PAGE_WAIT_MS: 1200,
+
+  // 游戏包名。知道就填，失败恢复时用来强停应用；留空则按 GAME_APP_NAME 反查
+  GAME_PACKAGE: "",
+
+  // 任务失败后先回收到登录页/桌面，再领下一单，避免卡在未知页
+  RECOVER_AFTER_FAIL: true,
+
+  // 每一步结束后校验是否到了预期界面；失败会中断并带上步骤名
+  VERIFY_EACH_STEP: true,
+
+  // true：校验不到就判失败；false：只打日志和截图，继续往下走
+  VERIFY_STRICT: true,
+
+  // 单步界面校验超时
+  STEP_VERIFY_TIMEOUT_MS: 10000,
+
+  // 点击兜底坐标（比例值 0~1，基于当前屏幕宽高）
+  COORD_FALLBACK: {
+    QQ_LOGIN: { x: 0.69, y: 0.84 },
+    AGREEMENT_CHECKBOX: { x: 0.03, y: 0.92 },
+    LOGIN_HELPER_ACCOUNT_INPUT: { x: 0.50, y: 0.49 },
+    LOGIN_HELPER_OP_BTN: { x: 0.50, y: 0.84 },
+    FRIEND_BTN: { x: 0.04, y: 0.79 },
+    LEFT_SECOND_BTN: { x: 0.05, y: 0.36 },
+    REUNION_INPUT: { x: 0.50, y: 0.56 },
+    REUNION_CONFIRM: { x: 0.50, y: 0.76 },
+    PROFILE_BTN: { x: 0.05, y: 0.07 },
+    SWITCH_ACCOUNT_BTN: { x: 0.18, y: 0.68 }
+  },
+
+  // 绝对像素坐标，优先于比例坐标
+  ABS_COORD: {
+    AGREEMENT_CHECKBOX: { x: 81, y: 679 },
+    QQ_LOGIN: { x: 846, y: 597 },
+    FRIEND_BTN: { x: 56, y: 590 },
+    LEFT_SECOND_BTN: { x: 58, y: 258 },
+    REUNION_INPUT: { x: 639, y: 386 },
+    REUNION_CONFIRM: { x: 635, y: 536 },
+    PAGE_BACK: { x: 64, y: 35 },
+    PROFILE_BTN: { x: 58, y: 35 },
+    SWITCH_ACCOUNT_BTN: { x: 218, y: 486 },
+    ACCEPT_INVITE: { x: 1044, y: 147 },
+    POPUP_CLOSE: { x: 1081, y: 147 },
+    LOGIN_HELPER_ACCOUNT_INPUT: { x: 385, y: 503 },
+    LOGIN_HELPER_OP_BTN: { x: 380, y: 1034 }
+  },
+
+  /**
+   * 页面文案锚点。建议用 Auto.js 布局分析核对后再改。
+   */
   SELECTORS: {
-    LOGIN_PAGE: /(QQ登录|微信登录|游客登录|快速登录)/,
+    LOGIN_PAGE: /(QQ登录|微信登录|游客登录|快速登录|二维码登录|用户协议|隐私政策|我已经详细阅读并同意)/,
     QQ_LOGIN_BTN: /(QQ登录)/,
-    AGREEMENT_CHECKBOX: /(同意|已阅读|用户协议|隐私政策)/,
-    LOGIN_HELPER_ACCOUNT_HINT: /(账号|QQ号|请输入账号)/,
-    LOGIN_HELPER_OP_BTN: /(OP|登录|确定|确认)/,
-    LOBBY_MARK: /(好友|商城|排位|活动)/,
+    AGREEMENT_CHECKBOX: /(同意|已阅读|用户协议|隐私政策|我已经详细阅读并同意)/,
+    LOGIN_HELPER_ACCOUNT_HINT: /(账号|QQ号|请输入账号|token|TOKEN)/,
+    LOGIN_HELPER_OP_BTN: /(输入OP数据点我授权|点我授权|OP数据|授权|OP|登录|确定|确认)/,
+    LOBBY_MARK: /(好友|商城|排位|活动|新手签到|新手任务|召唤)/,
     FRIEND_BTN: /(好友)/,
-    LEFT_SECOND_BTN_TEXT: /(重逢|召回|回归|老友)/,
+    LEFT_SECOND_BTN_TEXT: /(广结好友|重逢|召回|回归|老友|换一批)/,
     REUNION_CODE_INPUT_HINT: /(重逢码|邀请码|兑换码|请输入)/,
-    REUNION_CONFIRM_BTN: /(确定|提交|兑换|确认)/,
+    REUNION_CONFIRM_BTN: /(确认绑定|确定|提交|兑换|确认)/,
     RETRY_POPUP_CLOSE: /(关闭|取消|知道了|X)/,
-    PROFILE_BTN: /(头像|个人中心|我的)/,
-    SWITCH_ACCOUNT_BTN: /(切换账号|退出登录|注销)/,
-    BACK_TO_LOGIN_MARK: /(QQ登录|微信登录|游客登录|快速登录)/
+    PROFILE_BTN: /(头像|个人中心|我的|个人信息)/,
+    SWITCH_ACCOUNT_BTN: /(切换账号|退出登录|注销|切换帐号)/,
+    BACK_TO_LOGIN_MARK: /(QQ登录|微信登录|游客登录|快速登录|二维码登录)/,
+    BIND_SUCCESS: /(绑定成功|结义成功|添加成功|重逢成功|已绑定)/
   }
 };
 
-// Wait for Accessibility Service, otherwise text/desc queries cannot work.
+// 当前任务入口状态：login | lobby | unknown
+const FLOW_STATE = {
+  entryState: "unknown"
+};
+
 auto.waitFor();
 console.show();
-log("Script started.");
+log("英雄杀自动化脚本启动。");
+
 let screenshotEnabled = false;
 try {
-  // Request screenshot once so failure snapshots can be saved for debugging.
   screenshotEnabled = requestScreenCapture(false);
 } catch (e) {
-  // Screenshot permission is optional; flow can still continue without it.
   screenshotEnabled = false;
 }
 
-/**
- * Build HTTP headers for all server requests.
- */
-function headers() {
+/** 构造请求头。 */
+function buildHeaders() {
   const h = { "Content-Type": "application/json" };
   if (CONFIG.API_KEY && CONFIG.API_KEY.length > 0) {
     h["X-API-Key"] = CONFIG.API_KEY;
@@ -74,9 +168,7 @@ function headers() {
   return h;
 }
 
-/**
- * Parse JSON safely to avoid script crash on malformed response.
- */
+/** 安全解析 JSON，防止后端异常内容直接崩脚本。 */
 function safeJsonParse(raw) {
   try {
     return JSON.parse(raw);
@@ -85,265 +177,498 @@ function safeJsonParse(raw) {
   }
 }
 
-/**
- * POST JSON request helper.
- */
+/** 统一 POST JSON。 */
 function httpPostJson(path, payload) {
   const url = CONFIG.SERVER_BASE + path;
-  const res = http.postJson(url, payload, { headers: headers() });
-  if (!res) {
-    throw new Error("HTTP request failed: " + path);
-  }
+  const res = http.postJson(url, payload, { headers: buildHeaders() });
+  if (!res) throw new Error("HTTP 请求失败: " + path);
   const body = res.body ? res.body.string() : "";
-  return {
-    statusCode: res.statusCode,
-    bodyRaw: body,
-    json: safeJsonParse(body)
-  };
+  return { statusCode: res.statusCode, bodyRaw: body, json: safeJsonParse(body) };
 }
 
-/**
- * GET request helper.
- */
+/** 统一 GET。 */
 function httpGet(path) {
   const url = CONFIG.SERVER_BASE + path;
-  const res = http.get(url, { headers: headers() });
-  if (!res) {
-    throw new Error("HTTP request failed: " + path);
-  }
+  const res = http.get(url, { headers: buildHeaders() });
+  if (!res) throw new Error("HTTP 请求失败: " + path);
   const body = res.body ? res.body.string() : "";
-  return {
-    statusCode: res.statusCode,
-    bodyRaw: body,
-    json: safeJsonParse(body)
-  };
+  return { statusCode: res.statusCode, bodyRaw: body, json: safeJsonParse(body) };
 }
 
-// Unified short sleep; lets us tune pacing globally.
 function sleepShort(ms) {
   sleep(ms || CONFIG.PAGE_WAIT_MS);
 }
 
-// Click the center point of a UI node.
-function clickCenterOf(node) {
+/**
+ * 本机设备名。CONFIG.DEVICE_ID 有值则用配置；否则用 AndroidId。
+ * 不用 files / storages，Auto.js 6 访问这两类对象容易报「无效的对象属性」。
+ */
+var cachedDeviceId = "";
+function getDeviceId() {
+  if (cachedDeviceId) {
+    return cachedDeviceId;
+  }
+  var configured = String(CONFIG.DEVICE_ID || "").trim();
+  if (configured && configured.toLowerCase() !== "auto") {
+    cachedDeviceId = configured;
+    return cachedDeviceId;
+  }
+  var androidId = "";
+  try {
+    androidId = String(device.getAndroidId() || "").trim();
+  } catch (e) {
+    androidId = "";
+  }
+  if (androidId && androidId !== "null" && androidId.toLowerCase() !== "unknown") {
+    cachedDeviceId = "phone-" + androidId;
+    return cachedDeviceId;
+  }
+  cachedDeviceId = "phone-" + Date.now();
+  return cachedDeviceId;
+}
+
+/** 点击节点中心点。 */
+function clickCenter(node) {
   if (!node) return false;
   const b = node.bounds();
   return click(b.centerX(), b.centerY());
 }
 
-// Prefer text selector first.
+/** 按屏幕比例点击（自绘页兜底）。 */
+function tapByRatioPoint(point, tag) {
+  if (!point) return false;
+  const x = Math.floor(device.width * point.x);
+  const y = Math.floor(device.height * point.y);
+  const ok = click(x, y);
+  if (ok) {
+    log("坐标兜底点击[" + (tag || "unknown") + "] -> (" + x + "," + y + ")");
+    sleepShort();
+  }
+  return ok;
+}
+
+/** 按绝对像素坐标点击。 */
+function tapByAbsolutePoint(point, tag) {
+  if (!point) return false;
+  const ok = click(point.x, point.y);
+  if (ok) {
+    log("绝对坐标点击[" + (tag || "unknown") + "] -> (" + point.x + "," + point.y + ")");
+    sleepShort();
+  }
+  return ok;
+}
+
 function tapByTextRegex(regex, timeoutMs) {
-  const n = textMatches(regex).findOne(timeoutMs || 1000);
-  if (!n) return false;
-  const ok = clickCenterOf(n);
+  const node = textMatches(regex).findOne(timeoutMs || 1000);
+  if (!node) return false;
+  const ok = clickCenter(node);
   if (ok) sleepShort();
   return ok;
 }
 
-// Fallback to content-desc selector.
 function tapByDescRegex(regex, timeoutMs) {
-  const n = descMatches(regex).findOne(timeoutMs || 1000);
-  if (!n) return false;
-  const ok = clickCenterOf(n);
+  const node = descMatches(regex).findOne(timeoutMs || 1000);
+  if (!node) return false;
+  const ok = clickCenter(node);
   if (ok) sleepShort();
   return ok;
 }
 
-// Generic tap helper used by almost all workflow steps.
+/** 综合点击：text 优先，desc 兜底。 */
 function tapByRegex(regex, timeoutMs) {
   return tapByTextRegex(regex, timeoutMs) || tapByDescRegex(regex, timeoutMs);
 }
 
-// Wait until an anchor element of current page appears.
+/** 先文案，再绝对坐标，最后比例坐标。 */
+function tapWithFallbackEx(regex, absPoint, ratioPoint, tag, timeoutMs) {
+  const ok = tapByRegex(regex, timeoutMs);
+  if (ok) return true;
+  if (tapByAbsolutePoint(absPoint, tag + "-abs")) return true;
+  return tapByRatioPoint(ratioPoint, tag + "-ratio");
+}
+
+/** 等待页面锚点出现。 */
 function waitByRegex(regex, timeoutMs) {
-  const t = timeoutMs || CONFIG.ACTION_TIMEOUT_MS;
-  if (textMatches(regex).findOne(t)) return true;
+  const timeout = timeoutMs || CONFIG.ACTION_TIMEOUT_MS;
+  if (textMatches(regex).findOne(timeout)) return true;
   return !!descMatches(regex).findOne(300);
 }
 
-// Best-effort close of common startup/update popups.
+function existsByRegex(regex) {
+  return textMatches(regex).exists() || descMatches(regex).exists();
+}
+
+function isLoginPageNow() {
+  return existsByRegex(CONFIG.SELECTORS.LOGIN_PAGE);
+}
+
+function isLobbyNow() {
+  return existsByRegex(CONFIG.SELECTORS.LOBBY_MARK);
+}
+
+/**
+ * 启动后页面探测：
+ * - login: 明确看到登录页
+ * - lobby: 明确看到大厅（可能已自动登录）
+ * - unknown: 两者都识别不到（自绘层常见）
+ */
+function detectEntryState(timeoutMs) {
+  const deadline = new Date().getTime() + timeoutMs;
+  while (new Date().getTime() < deadline) {
+    if (isLobbyNow()) return "lobby";
+    if (isLoginPageNow()) return "login";
+    sleep(700);
+  }
+  return "unknown";
+}
+
+function alreadyInLobby() {
+  return FLOW_STATE.entryState === "lobby" || isLobbyNow();
+}
+
+/** 关闭启动时常见弹窗。 */
 function closeCommonPopups(rounds) {
-  const times = rounds || 6;
-  for (let i = 0; i < times; i++) {
-    let acted = false;
-    acted = tapByRegex(/(同意|允许|确认|继续|跳过|知道了|关闭|X)/, 600) || acted;
+  const n = rounds || 6;
+  for (let i = 0; i < n; i++) {
+    const acted = tapByRegex(/(同意|允许|确认|继续|跳过|知道了|关闭|X)/, 600);
     if (!acted) break;
   }
 }
 
 /**
- * Locate text input by:
- * 1) Direct EditText lookup
- * 2) Hint text + parent traversal lookup
+ * 查找输入框：
+ * 1) 直接找 EditText
+ * 2) 通过 hint 文案向父级回溯再找 EditText
  */
 function findInputByHintRegex(regex, timeoutMs) {
   const deadline = new Date().getTime() + (timeoutMs || 6000);
   while (new Date().getTime() < deadline) {
-    const editTextNode = className("android.widget.EditText").findOne(500);
-    if (editTextNode) return editTextNode;
+    const direct = className("android.widget.EditText").findOne(500);
+    if (direct) return direct;
 
     const hintNode = textMatches(regex).findOne(300) || descMatches(regex).findOne(300);
     if (hintNode && hintNode.parent()) {
-      const p = hintNode.parent();
-      const candidate = p.findOne(className("android.widget.EditText"));
+      const parentNode = hintNode.parent();
+      const candidate = parentNode.findOne(className("android.widget.EditText"));
       if (candidate) return candidate;
     }
   }
   return null;
 }
 
-// Robust text input: node.setText first, global setText as fallback.
+/** 安全填值：优先节点 setText，失败再全局 setText。 */
 function setInputText(inputNode, value) {
   if (!inputNode) return false;
   inputNode.click();
-  sleepShort(400);
+  sleepShort(300);
   try {
     inputNode.setText(value);
-    sleepShort(400);
+    sleepShort(300);
     return true;
   } catch (e) {
     try {
       setText(value);
-      sleepShort(400);
+      sleepShort(300);
       return true;
-    } catch (ex) {
+    } catch (e2) {
       return false;
     }
   }
 }
 
-/**
- * Core business flow for one task.
- * Throws Error on any required-step failure, and caller reports failed state.
- */
-function runLoginAndReunionFlow(task) {
-  const account = task.account;
-  const reunionCode = task.reunionCode;
-
-  // Step 1: launch game and handle startup dialogs.
-  log("Launching game...");
-  launchApp(CONFIG.GAME_APP_NAME);
-  sleep(8000);
-  closeCommonPopups(8);
-
-  if (!waitByRegex(CONFIG.SELECTORS.LOGIN_PAGE, 15000)) {
-    throw new Error("Login page not found.");
-  }
-
-  // Step 2: enter QQ login and accept agreement if needed.
-  log("Tap QQ login...");
-  if (!tapByRegex(CONFIG.SELECTORS.QQ_LOGIN_BTN, 5000)) {
-    throw new Error("QQ login button not found.");
-  }
-
-  tapByRegex(CONFIG.SELECTORS.AGREEMENT_CHECKBOX, 3000);
-
-  // Step 3: in login helper, fill account and submit.
-  log("Fill account in login helper...");
-  sleep(3000);
-  const accountInput = findInputByHintRegex(CONFIG.SELECTORS.LOGIN_HELPER_ACCOUNT_HINT, 10000);
-  if (!accountInput) {
-    throw new Error("Account input not found in login helper.");
-  }
-  if (!setInputText(accountInput, account)) {
-    throw new Error("Unable to input account.");
-  }
-
-  if (!tapByRegex(CONFIG.SELECTORS.LOGIN_HELPER_OP_BTN, 8000)) {
-    throw new Error("OP/login button not found.");
-  }
-
-  // Step 4: wait for lobby.
-  log("Waiting for game lobby...");
-  if (!waitByRegex(CONFIG.SELECTORS.LOBBY_MARK, 25000)) {
-    throw new Error("Game lobby not detected after login.");
-  }
-
-  // Step 5: open friend page and enter reunion panel.
-  log("Open friends page...");
-  if (!tapByRegex(CONFIG.SELECTORS.FRIEND_BTN, 8000)) {
-    throw new Error("Friend button not found.");
-  }
-
-  sleep(2500);
-  if (!tapByRegex(CONFIG.SELECTORS.LEFT_SECOND_BTN_TEXT, 7000)) {
-    throw new Error("Left second button for reunion not found.");
-  }
-
-  // Step 6: fill reunion code and confirm.
-  log("Input reunion code...");
-  const codeInput = findInputByHintRegex(CONFIG.SELECTORS.REUNION_CODE_INPUT_HINT, 10000);
-  if (!codeInput) {
-    throw new Error("Reunion code input not found.");
-  }
-  if (!setInputText(codeInput, reunionCode)) {
-    throw new Error("Unable to input reunion code.");
-  }
-
-  if (!tapByRegex(CONFIG.SELECTORS.REUNION_CONFIRM_BTN, 6000)) {
-    throw new Error("Reunion confirm button not found.");
-  }
-
-  // Step 7: close retry popup if any, then return lobby.
-  tapByRegex(CONFIG.SELECTORS.RETRY_POPUP_CLOSE, 3000);
-  sleepShort(800);
-
-  log("Back to lobby...");
-  back();
-  sleepShort();
-  back();
-  sleep(2000);
-
-  // Step 8: open profile and switch account for next loop.
-  log("Open profile and switch account...");
-  if (!tapByRegex(CONFIG.SELECTORS.PROFILE_BTN, 7000)) {
-    throw new Error("Profile button not found.");
-  }
-  sleep(2000);
-  if (!tapByRegex(CONFIG.SELECTORS.SWITCH_ACCOUNT_BTN, 7000)) {
-    throw new Error("Switch account button not found.");
-  }
-
-  if (!waitByRegex(CONFIG.SELECTORS.BACK_TO_LOGIN_MARK, 15000)) {
-    throw new Error("Did not return to login page.");
+function setInputTextByPoint(point, value, tag) {
+  if (!tapByRatioPoint(point, tag)) return false;
+  sleepShort(300);
+  try {
+    setText(value);
+    sleepShort(500);
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 
+function setInputTextByPointAbs(point, value, tag) {
+  if (!tapByAbsolutePoint(point, tag)) return false;
+  sleepShort(300);
+  try {
+    setText(value);
+    sleepShort(500);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function setInputTextBySmartPoint(absPoint, ratioPoint, value, tag) {
+  if (setInputTextByPointAbs(absPoint, value, tag + "-abs")) return true;
+  return setInputTextByPoint(ratioPoint, value, tag + "-ratio");
+}
+
 /**
- * Background heartbeat thread.
- * Keeps lease alive while the task is running.
+ * 等待登号器：
+ * - 配置了包名则先等包名切换
+ * - 否则等账号输入框或 OP 按钮
  */
-function startHeartbeatLoop(taskId, runId, stopFlagRef) {
+function waitLoginHelperReady() {
+  if (CONFIG.LOGIN_HELPER_PACKAGE && CONFIG.LOGIN_HELPER_PACKAGE.length > 0) {
+    const ok = waitForPackage(CONFIG.LOGIN_HELPER_PACKAGE, 8000);
+    if (!ok) {
+      log("未检测到登号器包名，继续尝试页面元素识别。");
+    } else {
+      return true;
+    }
+  }
+  if (findInputByHintRegex(CONFIG.SELECTORS.LOGIN_HELPER_ACCOUNT_HINT, 8000)) {
+    return true;
+  }
+  if (waitByRegex(CONFIG.SELECTORS.LOGIN_HELPER_OP_BTN, 3000)) {
+    return true;
+  }
+  if (!waitByRegex(CONFIG.SELECTORS.LOBBY_MARK, 1000)) {
+    log("未识别到登号器输入框，按兜底路径继续。");
+    return true;
+  }
+  return false;
+}
+
+function isOnLoginPage() {
+  return existsByRegex(CONFIG.SELECTORS.LOGIN_PAGE) || existsByRegex(CONFIG.SELECTORS.BACK_TO_LOGIN_MARK);
+}
+
+function resolveGamePackage() {
+  var pkg = String(CONFIG.GAME_PACKAGE || "").trim();
+  if (pkg) {
+    return pkg;
+  }
+  try {
+    pkg = String(app.getPackageName(CONFIG.GAME_APP_NAME) || "").trim();
+  } catch (e) {
+    pkg = "";
+  }
+  return pkg;
+}
+
+function currentPkg() {
+  try {
+    return String(currentPackage() || "");
+  } catch (e) {
+    return "";
+  }
+}
+
+function waitUntil(timeoutMs, checker) {
+  var deadline = new Date().getTime() + (timeoutMs || 8000);
+  while (new Date().getTime() < deadline) {
+    var hit = checker();
+    if (hit) {
+      return hit;
+    }
+    sleep(400);
+  }
+  return null;
+}
+
+function saveStepScreenshot(stepName) {
+  if (!screenshotEnabled) {
+    return;
+  }
+  try {
+    var image = captureScreen();
+    if (!image) {
+      return;
+    }
+    var path = "/sdcard/Download/hs_verify_" + Date.now() + ".png";
+    images.save(image, path, "png", 100);
+    log("校验截图: " + path + " @ " + stepName);
+  } catch (e) {
+    log("校验截图失败: " + e);
+  }
+}
+
+function passStep(stepName, how) {
+  if (!CONFIG.VERIFY_EACH_STEP) {
+    return;
+  }
+  var extra = how ? "（" + how + "）" : "";
+  log("[校验通过] " + stepName + extra);
+}
+
+function confirmStep(stepName, options) {
+  if (!CONFIG.VERIFY_EACH_STEP) {
+    return true;
+  }
+  options = options || {};
+  var timeout = options.timeout || CONFIG.STEP_VERIFY_TIMEOUT_MS || 10000;
+  var required = options.required;
+  if (required === undefined || required === null) {
+    required = CONFIG.VERIFY_STRICT;
+  }
+  var hit = waitUntil(timeout, function () {
+    if (options.editText) {
+      try {
+        if (className("android.widget.EditText").findOne(200)) {
+          return "输入框";
+        }
+      } catch (e) {}
+    }
+    var selectors = options.selectors || [];
+    for (var i = 0; i < selectors.length; i++) {
+      if (selectors[i] && existsByRegex(selectors[i])) {
+        return "界面文案";
+      }
+    }
+    var packages = options.packages || [];
+    var cur = currentPkg();
+    for (var j = 0; j < packages.length; j++) {
+      if (packages[j] && cur && cur === packages[j]) {
+        return "包名";
+      }
+    }
+    return null;
+  });
+  if (hit) {
+    passStep(stepName, hit);
+    return true;
+  }
+  saveStepScreenshot(stepName);
+  if (options.soft) {
+    passStep(stepName, "已点击，自绘层未读到文案");
+    return true;
+  }
+  if (!required) {
+    log("[校验未通过-继续] " + stepName + "：未看到预期界面，currentPackage=" + currentPkg());
+    return false;
+  }
+  throw new Error("[校验失败] " + stepName + "：未看到预期界面，currentPackage=" + currentPkg());
+}
+
+function forceStopPackage(pkg) {
+  if (!pkg) {
+    return;
+  }
+  try {
+    shell("am force-stop " + pkg, true);
+    log("已强制停止: " + pkg);
+  } catch (e) {
+    log("强制停止失败: " + pkg + " / " + e);
+  }
+}
+
+/** 失败后尽量退出未知页：关弹窗、返回、切号，最后强停游戏回桌面。 */
+function recoverToKnownPage() {
+  log("任务失败，开始页面恢复");
+  FLOW_STATE.entryState = "unknown";
+  closeCommonPopups(8);
+  tapByRegex(CONFIG.SELECTORS.RETRY_POPUP_CLOSE, 800);
+  tapByAbsolutePoint(CONFIG.ABS_COORD.POPUP_CLOSE, "恢复-关弹窗");
+  if (isOnLoginPage()) {
+    log("恢复完成：已在登录页");
+    return;
+  }
+
+  try {
+    tapByAbsolutePoint(CONFIG.ABS_COORD.PAGE_BACK, "恢复-返回");
+    back();
+    sleep(1200);
+    tapWithFallbackEx(
+      CONFIG.SELECTORS.PROFILE_BTN,
+      CONFIG.ABS_COORD.PROFILE_BTN,
+      CONFIG.COORD_FALLBACK.PROFILE_BTN,
+      "恢复-个人中心",
+      1500
+    );
+    sleep(1500);
+    tapWithFallbackEx(
+      CONFIG.SELECTORS.SWITCH_ACCOUNT_BTN,
+      CONFIG.ABS_COORD.SWITCH_ACCOUNT_BTN,
+      CONFIG.COORD_FALLBACK.SWITCH_ACCOUNT_BTN,
+      "恢复-切换账号",
+      1500
+    );
+    sleep(2500);
+  } catch (e) {
+    log("切号恢复未成功: " + e);
+  }
+  if (isOnLoginPage()) {
+    log("恢复完成：切号后回到登录页");
+    return;
+  }
+
+  var times = CONFIG.RECOVER_BACK_TIMES || 4;
+  for (var i = 0; i < times; i++) {
+    closeCommonPopups(2);
+    back();
+    sleep(800);
+    if (isOnLoginPage()) {
+      log("恢复完成：返回后回到登录页");
+      return;
+    }
+  }
+
+  forceStopPackage(resolveGamePackage());
+  if (CONFIG.LOGIN_HELPER_PACKAGE) {
+    forceStopPackage(CONFIG.LOGIN_HELPER_PACKAGE);
+  }
+  try {
+    home();
+  } catch (e) {
+    log("回桌面失败: " + e);
+  }
+  sleep(1500);
+  log("恢复完成：已强停游戏并回到桌面，下一单会重新打开游戏");
+}
+
+/** 失败截图，便于回看为什么没点到。 */
+function saveFailureScreenshot(taskId) {
+  if (!screenshotEnabled) return;
+  try {
+    const image = captureScreen();
+    if (!image) return;
+    const path = "/sdcard/Download/hs_task_failed_" + taskId + ".png";
+    images.save(image, path, "png", 100);
+    log("失败截图已保存: " + path);
+  } catch (e) {
+    log("截图失败: " + e);
+  }
+}
+
+/** 心跳线程：防止任务在服务端因租约超时被回收。 */
+function startHeartbeatLoop(taskId, runId, stopRef) {
   return threads.start(function () {
-    while (!stopFlagRef.stop) {
+    while (!stopRef.stop) {
       sleep(CONFIG.HEARTBEAT_INTERVAL_MS);
-      if (stopFlagRef.stop) break;
+      if (stopRef.stop) break;
       try {
         const res = httpPostJson("/tasks/" + taskId + "/heartbeat", {
-          deviceId: CONFIG.DEVICE_ID,
+          deviceId: getDeviceId(),
           runId: runId
         });
         log("heartbeat: " + res.bodyRaw);
       } catch (e) {
-        log("heartbeat error: " + e);
+        log("heartbeat 异常: " + e);
       }
     }
   });
 }
 
-// Ask server for next account/reunion-code task.
+/** 领取任务：只领英雄杀-结义。返回 {id, account, reunionCode, runId}，队列空则返回 null。 */
 function claimTask() {
-  const res = httpPostJson("/tasks/claim", { deviceId: CONFIG.DEVICE_ID });
+  const res = httpPostJson("/tasks/claim", {
+    deviceId: getDeviceId(),
+    gameCode: CONFIG.GAME_CODE,
+    taskType: CONFIG.TASK_TYPE
+  });
   if (res.statusCode !== 200 || !res.json) {
-    throw new Error("Claim failed: " + res.bodyRaw);
+    throw new Error("领取任务失败: " + res.bodyRaw);
   }
   return res.json.task;
 }
 
-// Report final status for claimed task.
+/** 上报任务结果。 */
 function reportTask(taskId, runId, status, errorMsg) {
   const payload = {
-    deviceId: CONFIG.DEVICE_ID,
+    deviceId: getDeviceId(),
     runId: runId,
     status: status
   };
@@ -352,81 +677,400 @@ function reportTask(taskId, runId, status, errorMsg) {
   log("report: " + res.bodyRaw);
 }
 
-// Save screenshot when task fails (for later selector tuning).
-function saveFailureScreenshot(taskId) {
-  if (!screenshotEnabled) return;
-  try {
-    const img = captureScreen();
-    if (!img) return;
-    const path = "/sdcard/Download/hs_task_failed_" + taskId + ".png";
-    images.save(img, path, "png", 100);
-    log("screenshot saved: " + path);
-  } catch (e) {
-    log("screenshot error: " + e);
+/**
+ * =========================
+ * 13 步业务流程
+ * =========================
+ */
+
+function step01LaunchGame() {
+  log("Step1 打开游戏");
+  let launched = launchApp(CONFIG.GAME_APP_NAME);
+  if (!launched) {
+    log("launchApp 失败，尝试点击桌面图标兜底。");
+    launched = tapByRegex(CONFIG.GAME_ICON_TEXT_FALLBACK, 4000);
+  }
+  if (!launched) {
+    throw new Error("无法启动游戏（应用名与图标文案都未命中）。");
+  }
+  sleep(8000);
+  closeCommonPopups(8);
+  confirmStep("Step1 打开游戏", {
+    selectors: [CONFIG.SELECTORS.LOGIN_PAGE, CONFIG.SELECTORS.LOBBY_MARK],
+    packages: [resolveGamePackage()],
+    timeout: CONFIG.ENTRY_DETECT_TIMEOUT_MS
+  });
+}
+
+function step02EnsureLoginPage() {
+  log("Step2 识别入口状态（登录页/大厅）");
+  const state = detectEntryState(CONFIG.COORD_ONLY_MODE ? CONFIG.STEP_VERIFY_TIMEOUT_MS : CONFIG.ENTRY_DETECT_TIMEOUT_MS);
+  FLOW_STATE.entryState = state;
+  if (state === "lobby") {
+    log("已检测到大厅，判定为自动登录，后续跳过登录与登号器步骤。");
+    passStep("Step2 入口状态", "大厅");
+    return;
+  }
+  if (state === "login") {
+    log("已检测到登录页。");
+    passStep("Step2 入口状态", "登录页");
+    return;
+  }
+  confirmStep("Step2 入口状态", {
+    selectors: [CONFIG.SELECTORS.LOGIN_PAGE, CONFIG.SELECTORS.LOBBY_MARK],
+    packages: [resolveGamePackage()]
+  });
+}
+
+function step03AgreeProtocol() {
+  if (alreadyInLobby()) {
+    log("Step3 跳过：当前已在大厅，无需勾选协议。");
+    passStep("Step3 勾选协议", "已在大厅");
+    return;
+  }
+  log("Step3 勾选协议");
+  tapWithFallbackEx(
+    CONFIG.SELECTORS.AGREEMENT_CHECKBOX,
+    CONFIG.ABS_COORD.AGREEMENT_CHECKBOX,
+    CONFIG.COORD_FALLBACK.AGREEMENT_CHECKBOX,
+    "协议勾选",
+    CONFIG.COORD_ONLY_MODE ? 1500 : 3000
+  );
+  sleep(600);
+  confirmStep("Step3 勾选协议", {
+    selectors: [
+      CONFIG.SELECTORS.QQ_LOGIN_BTN,
+      CONFIG.SELECTORS.LOGIN_PAGE,
+      CONFIG.SELECTORS.AGREEMENT_CHECKBOX
+    ],
+    packages: [resolveGamePackage()],
+    timeout: 3000,
+    soft: true
+  });
+}
+
+function step04TapQqLogin() {
+  if (alreadyInLobby()) {
+    log("Step4 跳过：当前已在大厅，无需点 QQ 登录。");
+    passStep("Step4 点击QQ登录", "已在大厅");
+    return;
+  }
+  log("Step4 点击 QQ 登录");
+  if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.QQ_LOGIN_BTN,
+    CONFIG.ABS_COORD.QQ_LOGIN,
+    CONFIG.COORD_FALLBACK.QQ_LOGIN,
+    "QQ登录",
+    CONFIG.COORD_ONLY_MODE ? 1500 : 6000
+  )) {
+    throw new Error("未找到 QQ 登录按钮。");
+  }
+  confirmStep("Step4 点击QQ登录", {
+    selectors: [CONFIG.SELECTORS.LOGIN_HELPER_OP_BTN, CONFIG.SELECTORS.LOGIN_HELPER_ACCOUNT_HINT],
+    packages: [CONFIG.LOGIN_HELPER_PACKAGE],
+    editText: true
+  });
+}
+
+function step05WaitLoginHelper() {
+  if (alreadyInLobby()) {
+    log("Step5 跳过：当前已在大厅，无需等待登号器。");
+    passStep("Step5 等待登号器", "已在大厅");
+    return;
+  }
+  log("Step5 等待登号器拉起");
+  if (!CONFIG.COORD_ONLY_MODE) {
+    if (!waitLoginHelperReady()) {
+      throw new Error("登号器未拉起或页面元素不可识别。");
+    }
+  } else {
+    sleep(2500);
+  }
+  confirmStep("Step5 等待登号器", {
+    selectors: [CONFIG.SELECTORS.LOGIN_HELPER_OP_BTN, CONFIG.SELECTORS.LOGIN_HELPER_ACCOUNT_HINT],
+    packages: [CONFIG.LOGIN_HELPER_PACKAGE],
+    editText: true
+  });
+}
+
+function step06InputAccountAndSubmit(account) {
+  if (alreadyInLobby()) {
+    log("Step6 跳过：当前已在大厅，无需填写账号。");
+    passStep("Step6 填写账号", "已在大厅");
+    return;
+  }
+
+  log("Step6 填写账号/token 并点击授权");
+  const accountInput = findInputByHintRegex(CONFIG.SELECTORS.LOGIN_HELPER_ACCOUNT_HINT, CONFIG.COORD_ONLY_MODE ? 2000 : 10000);
+  if (accountInput) {
+    if (!setInputText(accountInput, account)) throw new Error("账号填写失败。");
+  } else if (!setInputTextBySmartPoint(
+    CONFIG.ABS_COORD.LOGIN_HELPER_ACCOUNT_INPUT,
+    CONFIG.COORD_FALLBACK.LOGIN_HELPER_ACCOUNT_INPUT,
+    account,
+    "账号输入框兜底"
+  )) {
+    throw new Error("未找到账号输入框，且坐标兜底输入失败。");
+  }
+  if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.LOGIN_HELPER_OP_BTN,
+    CONFIG.ABS_COORD.LOGIN_HELPER_OP_BTN,
+    CONFIG.COORD_FALLBACK.LOGIN_HELPER_OP_BTN,
+    "输入OP数据点我授权",
+    CONFIG.COORD_ONLY_MODE ? 1500 : 8000
+  )) {
+    throw new Error("未找到「输入OP数据点我授权」按钮。");
+  }
+  sleep(6000);
+  confirmStep("Step6 填写账号并授权", {
+    selectors: [CONFIG.SELECTORS.LOBBY_MARK],
+    packages: [resolveGamePackage()],
+    timeout: CONFIG.WAIT_AFTER_LOGIN_MS
+  });
+}
+
+function step07WaitLobby() {
+  if (alreadyInLobby()) {
+    log("Step7 已在大厅，无需等待。");
+    confirmStep("Step7 进入大厅", { selectors: [CONFIG.SELECTORS.LOBBY_MARK] });
+    return;
+  }
+  log("Step7 等待进入大厅");
+  if (!CONFIG.COORD_ONLY_MODE) {
+    if (!waitByRegex(CONFIG.SELECTORS.LOBBY_MARK, 25000)) {
+      throw new Error("登录后未进入大厅。");
+    }
+  } else {
+    sleep(CONFIG.WAIT_AFTER_LOGIN_MS);
+  }
+  confirmStep("Step7 进入大厅", {
+    selectors: [CONFIG.SELECTORS.LOBBY_MARK, CONFIG.SELECTORS.FRIEND_BTN],
+    packages: [resolveGamePackage()]
+  });
+}
+
+function step08OpenFriendPage() {
+  log("Step8 打开好友页");
+  if (CONFIG.COORD_ONLY_MODE) {
+    tapByAbsolutePoint(CONFIG.ABS_COORD.FRIEND_BTN, "好友按钮-abs-1");
+    sleep(2200);
+  } else if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.FRIEND_BTN,
+    CONFIG.ABS_COORD.FRIEND_BTN,
+    CONFIG.COORD_FALLBACK.FRIEND_BTN,
+    "好友按钮",
+    8000
+  )) {
+    throw new Error("未找到好友按钮。");
+  } else {
+    sleep(2200);
+  }
+  confirmStep("Step8 打开好友页", {
+    selectors: [CONFIG.SELECTORS.LEFT_SECOND_BTN_TEXT, CONFIG.SELECTORS.FRIEND_BTN]
+  });
+}
+
+function step09TapLeftSecondButton() {
+  log("Step9 点击左侧第二个按钮");
+  if (CONFIG.COORD_ONLY_MODE) {
+    sleep(3000);
+    tapByAbsolutePoint(CONFIG.ABS_COORD.LEFT_SECOND_BTN, "左侧第二按钮");
+    sleep(1200);
+  } else if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.LEFT_SECOND_BTN_TEXT,
+    CONFIG.ABS_COORD.LEFT_SECOND_BTN,
+    CONFIG.COORD_FALLBACK.LEFT_SECOND_BTN,
+    "左侧第二按钮",
+    7000
+  )) {
+    throw new Error("未找到左侧第二个目标按钮。");
+  }
+  if (!waitByRegex(CONFIG.SELECTORS.REUNION_CONFIRM_BTN, 1500)) {
+    log("Step9 未检测到重逢弹窗，尝试点击【接受邀请】");
+    tapByAbsolutePoint(CONFIG.ABS_COORD.ACCEPT_INVITE, "接受邀请");
+    sleep(1500);
+  }
+  confirmStep("Step9 打开重逢弹窗", {
+    selectors: [CONFIG.SELECTORS.REUNION_CONFIRM_BTN, CONFIG.SELECTORS.REUNION_CODE_INPUT_HINT],
+    editText: true
+  });
+}
+
+function step10InputReunionCodeAndConfirm(reunionCode) {
+  log("Step10 填重逢码并确认");
+  const codeInput = findInputByHintRegex(CONFIG.SELECTORS.REUNION_CODE_INPUT_HINT, 10000);
+  let filled = false;
+  if (codeInput) {
+    filled = setInputText(codeInput, reunionCode);
+  } else {
+    filled = setInputTextBySmartPoint(
+      CONFIG.ABS_COORD.REUNION_INPUT,
+      CONFIG.COORD_FALLBACK.REUNION_INPUT,
+      reunionCode,
+      "重逢码输入框"
+    );
+  }
+  if (!filled) throw new Error("重逢码填写失败。");
+  if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.REUNION_CONFIRM_BTN,
+    CONFIG.ABS_COORD.REUNION_CONFIRM,
+    CONFIG.COORD_FALLBACK.REUNION_CONFIRM,
+    "确认绑定",
+    6000
+  )) {
+    throw new Error("未找到重逢码确认按钮。");
+  }
+  confirmStep("Step10 提交重逢码", {
+    selectors: [CONFIG.SELECTORS.BIND_SUCCESS, CONFIG.SELECTORS.RETRY_POPUP_CLOSE, CONFIG.SELECTORS.LOBBY_MARK]
+  });
+}
+
+function step11CloseRetryPopup() {
+  log("Step11 关闭重试弹窗（若出现）");
+  if (!tapByRegex(CONFIG.SELECTORS.RETRY_POPUP_CLOSE, 2500)) {
+    tapByAbsolutePoint(CONFIG.ABS_COORD.POPUP_CLOSE, "弹窗关闭按钮");
+  }
+  sleepShort(800);
+  confirmStep("Step11 关闭弹窗", {
+    selectors: [CONFIG.SELECTORS.LOBBY_MARK, CONFIG.SELECTORS.FRIEND_BTN, CONFIG.SELECTORS.PROFILE_BTN],
+    required: false
+  });
+}
+
+function step12SwitchAccountFromProfile() {
+  log("Step12 个人中心切换账号");
+  const backClicked = tapByAbsolutePoint(CONFIG.ABS_COORD.PAGE_BACK, "页面返回按钮");
+  if (!backClicked) {
+    back();
+  }
+  sleep(1800);
+
+  if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.PROFILE_BTN,
+    CONFIG.ABS_COORD.PROFILE_BTN,
+    CONFIG.COORD_FALLBACK.PROFILE_BTN,
+    "个人中心",
+    7000
+  )) {
+    throw new Error("未找到个人中心入口。");
+  }
+  sleep(2000);
+  confirmStep("Step12 进入个人中心", {
+    selectors: [CONFIG.SELECTORS.SWITCH_ACCOUNT_BTN]
+  });
+  if (!tapWithFallbackEx(
+    CONFIG.SELECTORS.SWITCH_ACCOUNT_BTN,
+    CONFIG.ABS_COORD.SWITCH_ACCOUNT_BTN,
+    CONFIG.COORD_FALLBACK.SWITCH_ACCOUNT_BTN,
+    "切换账号",
+    7000
+  )) {
+    throw new Error("未找到切换账号按钮。");
   }
 }
 
+function step13EnsureBackToLoginPage() {
+  log("Step13 校验回到登录页");
+  if (!CONFIG.COORD_ONLY_MODE) {
+    if (!waitByRegex(CONFIG.SELECTORS.BACK_TO_LOGIN_MARK, 15000)) {
+      throw new Error("切换账号后未回到登录页。");
+    }
+  } else {
+    sleep(3000);
+  }
+  confirmStep("Step13 回到登录页", {
+    selectors: [CONFIG.SELECTORS.BACK_TO_LOGIN_MARK, CONFIG.SELECTORS.LOGIN_PAGE],
+    timeout: 15000
+  });
+}
+
+/** 单任务执行入口。任一步抛错都会被外层捕获并上报 failed。 */
+function runFlowForTask(task) {
+  FLOW_STATE.entryState = "unknown";
+  const account = task.account;
+  const reunionCode = task.reunionCode;
+
+  step01LaunchGame();
+  step02EnsureLoginPage();
+  step03AgreeProtocol();
+  step04TapQqLogin();
+  step05WaitLoginHelper();
+  step06InputAccountAndSubmit(account);
+  step07WaitLobby();
+  step08OpenFriendPage();
+  step09TapLeftSecondButton();
+  step10InputReunionCodeAndConfirm(reunionCode);
+  step11CloseRetryPopup();
+  step12SwitchAccountFromProfile();
+  step13EnsureBackToLoginPage();
+}
+
 /**
- * Main worker loop:
- * - health check
- * - claim task
- * - execute flow
- * - report result
- * - repeat forever
+ * 主循环：健康检查 -> 领取任务 -> 执行 -> 上报 -> 再领下一条。
  */
 function mainLoop() {
-  log("Check server health...");
+  log("本机设备名: " + getDeviceId());
   const health = httpGet("/health");
-  log("health: " + health.bodyRaw);
+  log("服务健康检查: " + health.bodyRaw);
 
   while (true) {
     let task = null;
     try {
       task = claimTask();
     } catch (e) {
-      log("claim error: " + e);
+      log("领取任务异常: " + e);
       sleep(CONFIG.POLL_INTERVAL_MS);
       continue;
     }
 
     if (!task) {
-      log("No task. waiting...");
+      log("暂无任务，等待下次轮询...");
       sleep(CONFIG.POLL_INTERVAL_MS);
       continue;
     }
 
-    log("Task claimed id=" + task.id + ", account=" + task.account);
-    const stopFlag = { stop: false };
-    const hbThread = startHeartbeatLoop(task.id, task.runId, stopFlag);
-    let status = "done";
-    let error = "";
+    log("已领取任务 id=" + task.id + " account=" + task.account);
+
+    const stopRef = { stop: false };
+    const heartbeatThread = startHeartbeatLoop(task.id, task.runId, stopRef);
+    let finalStatus = "done";
+    let finalError = "";
 
     try {
-      runLoginAndReunionFlow(task);
-      log("Task done.");
-      toast("Task done: " + task.id);
+      runFlowForTask(task);
+      toast("任务完成: " + task.id);
+      log("任务完成: " + task.id);
     } catch (e) {
-      // Any thrown error means this task is considered failed.
-      status = "failed";
-      error = String(e);
-      log("Task failed: " + error);
-      toast("Task failed: " + task.id);
+      finalStatus = "failed";
+      finalError = String(e);
+      toast("任务失败: " + task.id);
+      log("任务失败: " + finalError);
       saveFailureScreenshot(task.id);
     } finally {
-      stopFlag.stop = true;
+      stopRef.stop = true;
       try {
-        hbThread.interrupt();
+        heartbeatThread.interrupt();
       } catch (ignore) {}
     }
 
     try {
-      reportTask(task.id, task.runId, status, error);
+      reportTask(task.id, task.runId, finalStatus, finalError);
     } catch (e) {
-      // Reporting failure should not crash the worker loop.
-      log("report error: " + e);
+      log("结果上报异常: " + e);
     }
 
-    sleep(1500);
+    if (finalStatus === "failed" && CONFIG.RECOVER_AFTER_FAIL) {
+      try {
+        recoverToKnownPage();
+      } catch (e) {
+        log("页面恢复异常: " + e);
+        try {
+          home();
+        } catch (ignore) {}
+      }
+    }
+
+    sleep(1200);
   }
 }
 
